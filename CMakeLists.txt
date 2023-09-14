@@ -12,6 +12,7 @@ add_subdirectory(drivers/fatfs)
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
 add_subdirectory(drivers/vga)
+add_subdirectory(drivers/nespad)
 
 add_executable(gameboy
         src/main.cpp
@@ -24,7 +25,8 @@ target_link_libraries(gameboy
     vga
     ps2kbd
     sdcard
-    fatfs        
+    fatfs 
+    nespad       
 
         pico_stdlib 
 	pico_stdio 
@@ -61,7 +63,11 @@ SDCARD_PIN_SPI0_MISO=4
 # PS2KBD
 USE_PS2_KBD    
 PS2KBD_GPIO_FIRST=0
-# Custom
+# NES Gamepad
+NES_GPIO_CLK=14
+NES_GPIO_LAT=15
+NES_GPIO_DATA=16
+# Other
 FF_USE_FIND
 )
 

@@ -18,6 +18,8 @@
 #define ENABLE_SOUND 0
 #define ENABLE_SDCARD 1
 #define USE_PS2_KBD 1
+#define USE_NESPAD 1
+
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
 #define PEANUT_GB_USE_BIOS 0
 
@@ -52,6 +54,7 @@
 /* Murm*/
 #include "vga.h"
 #include "ps2kbd_mrmltr.h"
+#include "nespad.h"
 #include "f_util.h"
 #include "ff.h"
 
@@ -824,6 +827,8 @@ void mk_ili9225_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcol
 	}
 }
 
+
+#ifdef USE_PS2_KBD
 void print(hid_keyboard_report_t const *report)
 {
 	printf("HID key report modifiers %2.2X report ", report->modifier);
@@ -922,7 +927,6 @@ void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report
 	}
 }
 
-#ifdef USE_PS2_KBD
 Ps2Kbd_Mrmltr ps2kbd(
 	pio1,
 	0,
@@ -1260,6 +1264,17 @@ void rom_file_selector()
 		ps2kbd.tick();
 #endif
 
+#ifdef USE_NESPAD
+			//joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
+			joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
+			joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
+			joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
+			joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
+			joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
+			joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
+			joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+			joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
+#endif
 		if (!joypad_bits.start)
 		{
 			/* copy the rom from the SD card to flash and start the game */
@@ -1354,6 +1369,11 @@ int main(void)
 	ps2kbd.init_gpio();
 #endif
 
+#ifdef USE_NESPAD
+	printf("NESPAD ");
+    nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
+#endif
+
 #if ENABLE_SOUND
 	printf("SOUND ");
 	//    gpio_set_function(AUDIO_PIN, GPIO_FUNC_PWM);
@@ -1421,6 +1441,9 @@ int main(void)
 		while (!restart)
 		{
 			int input;
+#ifdef USE_NESPAD
+    nespad_read_start();
+#endif
 
 #ifdef USE_PS2_KBD
 			ps2kbd.tick();
@@ -1454,6 +1477,17 @@ int main(void)
 			prev_joypad_bits.select = gb.direct.joypad_bits.select;
 			prev_joypad_bits.start = gb.direct.joypad_bits.start;
 
+#ifdef USE_NESPAD
+			joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
+			joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
+			joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
+			joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
+			joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
+			joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
+			joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+			joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
+#endif
+
 			gb.direct.joypad_bits.up = joypad_bits.up;
 			gb.direct.joypad_bits.down = joypad_bits.down;
 			gb.direct.joypad_bits.left = joypad_bits.left;
@@ -1462,6 +1496,7 @@ int main(void)
 			gb.direct.joypad_bits.b = joypad_bits.b;
 			gb.direct.joypad_bits.select = joypad_bits.select;
 			gb.direct.joypad_bits.start = joypad_bits.start;
+
 
 			/* hotkeys (select + * combo)*/
 			if (!gb.direct.joypad_bits.select)
@@ -1625,6 +1660,9 @@ int main(void)
 			default:
 				break;
 			}
+			#ifdef USE_NESPAD
+    			nespad_read_finish();
+			#endif
 		}
 	out:
 		puts("\nEmulation Ended");
