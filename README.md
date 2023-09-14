@@ -1,5 +1,5 @@
 # Raspberry Pi Pico GameBoy Emulator
-Raspberry Pi Pico GameBoy Emulator for MURMULATOR devboard based on [Pico-GB](https://github.com/YouMakeTech/Pico-GB)
+Raspberry Pi Pico GameBoy Emulator based on [Pico-GB](https://github.com/YouMakeTech/Pico-GB) for MURMULATOR devboard 
 
 Murmulator devboard have MicroSD card slot, PS/2 keyboard input and VGA output
 
