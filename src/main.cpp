@@ -118,7 +118,7 @@ uint16_t screen[LCD_HEIGHT][LCD_WIDTH];
 
 #define putstdio(x) write(1, x, strlen(x))
 
-void mk_ili9225_get_letter(uint8_t *fbuf, char l, uint8_t color, uint8_t bgcolor)
+void get_letter(uint8_t *fbuf, char l, uint8_t color, uint8_t bgcolor)
 {
 	uint8_t letter[8];
 	uint8_t row;
@@ -804,17 +804,16 @@ void mk_ili9225_get_letter(uint8_t *fbuf, char l, uint8_t color, uint8_t bgcolor
 	}
 }
 
-void mk_ili9225_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor)
+void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor)
 {
 	uint8_t fbuf[8 * 8];
 
 	for (uint8_t i = 0; i < strlen(s); i++)
 	{
-		mk_ili9225_get_letter(fbuf, s[i], color, bgcolor);
+		get_letter(fbuf, s[i], color, bgcolor);
 
 		for (uint8_t row = 0; row < 8; row++)
 		{
-			// uint32_t *buf = (uint32_t *)&(linebuf->line);
 			memcpy(&screen[row + y][x], &fbuf[row * 8], 8);
 		}
 
@@ -834,7 +833,7 @@ void print(hid_keyboard_report_t const *report)
 	printf("HID key report modifiers %2.2X report ", report->modifier);
 	for (int i = 0; i < 6; ++i)
 		printf("%2.2X", report->keycode[i]);
-	printf("\n");
+	printf("\r\n");
 }
 
 static bool isInReport(hid_keyboard_report_t const *report, const unsigned char keycode)
@@ -1182,6 +1181,8 @@ void load_cart_rom_file(char *filename)
  */
 uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_page)
 {
+	// Dirty screen cleanup
+    memset(&screen, 0x00, sizeof(screen));
 
 	DIR dj;
 	FILINFO fno;
@@ -1195,7 +1196,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 	}
 
 	/* clear the filenames array */
-	for (uint8_t ifile = 0; ifile < 22; ifile++)
+	for (uint8_t ifile = 0; ifile < 18; ifile++)
 	{
 		strcpy(filename[ifile], "");
 	}
@@ -1207,7 +1208,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 	/* skip the first N pages */
 	if (num_page > 0)
 	{
-		while (num_file < num_page * 22 && fr == FR_OK && fno.fname[0])
+		while (num_file < num_page * 18 && fr == FR_OK && fno.fname[0])
 		{
 			num_file++;
 			fr = f_findnext(&dj, &fno);
@@ -1216,7 +1217,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 
 	/* store the filenames of this page */
 	num_file = 0;
-	while (num_file < 22 && fr == FR_OK && fno.fname[0])
+	while (num_file < 18 && fr == FR_OK && fno.fname[0])
 	{
 		strcpy(filename[num_file], fno.fname);
 		num_file++;
@@ -1228,7 +1229,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 	// mk_ili9225_fill(0x0000);
 	for (uint8_t ifile = 0; ifile < num_file; ifile++)
 	{
-		mk_ili9225_text(filename[ifile], 0, ifile * 8, 0xFF, 0x00);
+		draw_text(filename[ifile], 0, ifile * 8, 0xFF, 0x00);
 	}
 	return num_file;
 }
@@ -1251,7 +1252,7 @@ void rom_file_selector()
 
 	/* select the first rom */
 	uint8_t selected = 0;
-	mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+	draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
 	sleep_ms(3000);
 
 	//			load_cart_rom_file(filename[selected]);
@@ -1264,7 +1265,7 @@ void rom_file_selector()
 		ps2kbd.tick();
 #endif
 
-#ifdef USE_NESPAD
+#if USE_NESPAD
 			//joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
 			joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
 			joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
@@ -1284,17 +1285,17 @@ void rom_file_selector()
 		if (!joypad_bits.down)
 		{
 			/* select the next rom */
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
 			selected++;
 			if (selected >= num_file)
 				selected = 0;
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
 			sleep_ms(150);
 		}
 		if (!joypad_bits.up)
 		{
 			/* select the previous rom */
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
 			if (selected == 0)
 			{
 				selected = num_file - 1;
@@ -1303,7 +1304,7 @@ void rom_file_selector()
 			{
 				selected--;
 			}
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
 			sleep_ms(150);
 		}
 		if (!joypad_bits.right)
@@ -1319,7 +1320,7 @@ void rom_file_selector()
 			}
 			/* select the first file */
 			selected = 0;
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
 			sleep_ms(150);
 		}
 		if ((!joypad_bits.left) && num_page > 0)
@@ -1329,7 +1330,7 @@ void rom_file_selector()
 			num_file = rom_file_selector_display_page(filename, num_page);
 			/* select the first file */
 			selected = 0;
-			mk_ili9225_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+			draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
 			sleep_ms(150);
 		}
 		tight_loop_contents();
@@ -1369,7 +1370,7 @@ int main(void)
 	ps2kbd.init_gpio();
 #endif
 
-#ifdef USE_NESPAD
+#if USE_NESPAD
 	printf("NESPAD ");
     nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 #endif
@@ -1441,7 +1442,7 @@ int main(void)
 		while (!restart)
 		{
 			int input;
-#ifdef USE_NESPAD
+#if USE_NESPAD
     nespad_read_start();
 #endif
 
@@ -1477,7 +1478,7 @@ int main(void)
 			prev_joypad_bits.select = gb.direct.joypad_bits.select;
 			prev_joypad_bits.start = gb.direct.joypad_bits.start;
 
-#ifdef USE_NESPAD
+#if USE_NESPAD
 			joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
 			joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
 			joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
@@ -1660,7 +1661,7 @@ int main(void)
 			default:
 				break;
 			}
-			#ifdef USE_NESPAD
+			#if USE_NESPAD
     			nespad_read_finish();
 			#endif
 		}
