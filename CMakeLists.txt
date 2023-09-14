@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.13...3.23)
 
 include(pico_sdk_import.cmake)
 
-project(RP2040_GB C CXX ASM)
+project(gameboy C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -13,14 +13,14 @@ add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
 add_subdirectory(drivers/vga)
 
-add_executable(RP2040_GB
+add_executable(gameboy
         src/main.cpp
         ext/minigb_apu/minigb_apu.c
 )
 
-target_include_directories(RP2040_GB PRIVATE inc ext/minigb_apu)
+target_include_directories(gameboy PRIVATE inc ext/minigb_apu)
 
-target_link_libraries(RP2040_GB
+target_link_libraries(gameboy
     vga
     ps2kbd
     sdcard
@@ -38,7 +38,7 @@ target_link_libraries(RP2040_GB
         pico_binary_info
 )
 
-target_compile_definitions(RP2040_GB PRIVATE
+target_compile_definitions(gameboy PRIVATE
         PARAM_ASSERTIONS_DISABLE_ALL=1
         PICO_ENTER_USB_BOOT_ON_EXIT=1
         PICO_STDIO_ENABLE_CRLF_SUPPORT=0
@@ -73,10 +73,10 @@ function(pico_add_verbose_dis_output TARGET)
 		)
 endfunction()
 
-#pico_set_binary_type(RP2040_GB copy_to_ram)
-#pico_set_binary_type(RP2040_GB no_flash)
-pico_enable_stdio_usb(RP2040_GB 1)
-pico_enable_stdio_uart(RP2040_GB 0)
-pico_add_verbose_dis_output(RP2040_GB)
-pico_add_bin_output(RP2040_GB)
-pico_add_uf2_output(RP2040_GB)
+#pico_set_binary_type(gameboy copy_to_ram)
+#pico_set_binary_type(gameboy no_flash)
+pico_enable_stdio_usb(gameboy 1)
+pico_enable_stdio_uart(gameboy 0)
+pico_add_verbose_dis_output(gameboy)
+pico_add_bin_output(gameboy)
+pico_add_uf2_output(gameboy)
