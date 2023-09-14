@@ -826,8 +826,7 @@ void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor)
 	}
 }
 
-
-#ifdef USE_PS2_KBD
+#if USE_PS2_KBD
 void print(hid_keyboard_report_t const *report)
 {
 	printf("HID key report modifiers %2.2X report ", report->modifier);
@@ -1182,7 +1181,7 @@ void load_cart_rom_file(char *filename)
 uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_page)
 {
 	// Dirty screen cleanup
-    memset(&screen, 0x00, sizeof(screen));
+	memset(&screen, 0x00, sizeof(screen));
 
 	DIR dj;
 	FILINFO fno;
@@ -1261,20 +1260,20 @@ void rom_file_selector()
 	while (true)
 	{
 
-#ifdef USE_PS2_KBD
+#if USE_PS2_KBD
 		ps2kbd.tick();
 #endif
 
 #if USE_NESPAD
-			//joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-			joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-			joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
-			joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
-			joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
-			joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
-			joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
-			joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
-			joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
+		// joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
+		joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
+		joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
+		joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
+		joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
+		joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
+		joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
+		joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+		joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
 #endif
 		if (!joypad_bits.start)
 		{
@@ -1365,14 +1364,14 @@ int main(void)
 	vmode = Video(DEV_VGA, RES_HVGA);
 	sleep_ms(50);
 
-#ifdef USE_PS2_KBD
+#if USE_PS2_KBD
 	printf("PS2 KBD ");
 	ps2kbd.init_gpio();
 #endif
 
 #if USE_NESPAD
 	printf("NESPAD ");
-    nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
+	nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 #endif
 
 #if ENABLE_SOUND
@@ -1443,10 +1442,10 @@ int main(void)
 		{
 			int input;
 #if USE_NESPAD
-    nespad_read_start();
+			nespad_read_start();
 #endif
 
-#ifdef USE_PS2_KBD
+#if USE_PS2_KBD
 			ps2kbd.tick();
 #endif
 
@@ -1497,7 +1496,6 @@ int main(void)
 			gb.direct.joypad_bits.b = joypad_bits.b;
 			gb.direct.joypad_bits.select = joypad_bits.select;
 			gb.direct.joypad_bits.start = joypad_bits.start;
-
 
 			/* hotkeys (select + * combo)*/
 			if (!gb.direct.joypad_bits.select)
@@ -1661,9 +1659,9 @@ int main(void)
 			default:
 				break;
 			}
-			#if USE_NESPAD
-    			nespad_read_finish();
-			#endif
+#if USE_NESPAD
+			nespad_read_finish();
+#endif
 		}
 	out:
 		puts("\nEmulation Ended");
