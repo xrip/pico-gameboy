@@ -1,5 +1,5 @@
 # Raspberry Pi Pico GameBoy Emulator
-Raspberry Pi Pico GameBoy Emulator for MULMULATOR devboard based on [Pico-GB](https://github.com/YouMakeTech/Pico-GB)
+Raspberry Pi Pico GameBoy Emulator for MURMULATOR devboard based on [Pico-GB](https://github.com/YouMakeTech/Pico-GB)
 
 Murmulator devboard have MicroSD card slot, PS/2 keyboard input and VGA output
 
@@ -47,7 +47,7 @@ make -j4
 * The RP2040-GB emulator is able to run at full speed on the Pico, at the expense of emulation accuracy. Some games may not work as expected or may not work at all. RP2040-GB is still experimental and not all features are guaranteed to work.
 * RP2040-GB is only compatible with [original Game Boy DMG games](https://en.wikipedia.org/wiki/List_of_Game_Boy_games) (not compatible with Game Boy Color or Game Boy Advance games)
 * Repeatedly flashing your Pico will eventually wear out the flash memory (Pico is qualified for min. 100K flash/erase cycles)
-* The emulator overclocks the Pico in order to get the emulator working fast enough. Overclocking can reduce the Pico’s lifespan.
+* The emulator overclocks the Pico in order to get the emulator working fast enough. Overclocking can reduce the Picoâ€™s lifespan.
 * Use this software and instructions at your own risk! I will not be responsible in any way for any damage to your Pico and/or connected peripherals caused by using this software. I also do not take responsibility in any way when damage is caused to the Pico or display due to incorrect wiring or voltages.
 
 # License
