@@ -14,7 +14,7 @@ To reboot emulator press HOME key
 
 # Hardware needed
 To get it working you should have an Murmulator (development) board with VGA output. Schematics available here at https://github.com/AlexEkb4ever/MURMULATOR_classical_scheme
-![Murmulator Schematics](https://github.com/AlexEkb4ever/MURMULATOR_classical_scheme/blob/main/img/scheme.png)
+![Murmulator Schematics](https://github.com/javavi/pico-infonesPlus/blob/main/assets/Murmulator-1_BSchem.JPG)
 
 # Flashing the firmware
 * Download gameboy.uf2 from the [releases page](https://github.com/xrip/pico-gameboy/releases)
