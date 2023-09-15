@@ -32,10 +32,8 @@ static PIO pio = pio1;
 static uint8_t sm = -1;
 uint8_t nespad_state = 0;
 
-bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,
-                  uint8_t latPin) {
-    if (pio_can_add_program(pio, &nespad_program) &&
-        ((sm = pio_claim_unused_sm(pio, true)) >= 0)) {
+bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin, uint8_t latPin) {
+    if (pio_can_add_program(pio, &nespad_program) && ((sm = pio_claim_unused_sm(pio, true)) >= 0)) {
         uint offset = pio_add_program(pio, &nespad_program);
         pio_sm_config c = nespad_program_get_default_config(offset);
 
@@ -70,7 +68,7 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,
 
 // Initiate nespad read. Non-blocking; result will be available in ~100 uS
 // via nespad_read_finish(). Must first call nespad_begin() once to set up PIO.
-void nespad_read_start(void) { pio_interrupt_clear(pio, 0); }
+void nespad_read_start() { pio_interrupt_clear(pio, 0); }
 
 // Finish nespad read. Ideally should be called ~100 uS after
 // nespad_read_start(), but can be sooner (will block until ready), or later
@@ -79,7 +77,7 @@ void nespad_read_start(void) { pio_interrupt_clear(pio, 0); }
 // 0x04=Down, 0x08=Up, 0x10=Start, 0x20=Select, 0x40=B, 0x80=A. Must first
 // call nespad_begin() once to set up PIO. Result will be 0 if PIO failed to
 // init (e.g. no free state machine).
-void nespad_read_finish(void) {
+void nespad_read_finish() {
     // Right-shift was used in sm config so bit order matches NES controller
     // bits used elsewhere in picones, but does require shifting down...
     nespad_state = (sm >= 0) ? ((pio_sm_get_blocking(pio, sm) >> 24) ^ 0xFF) : 0;

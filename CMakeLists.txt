@@ -68,8 +68,8 @@ target_compile_definitions(gameboy PRIVATE
 
         # NES Gamepad
         NES_GPIO_CLK=14
-        NES_GPIO_LAT=15
-        NES_GPIO_DATA=16
+        NES_GPIO_DATA=15
+        NES_GPIO_LAT=16
 
         # Other
         FF_USE_FIND

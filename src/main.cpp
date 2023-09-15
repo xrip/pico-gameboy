@@ -1129,15 +1129,14 @@ void rom_file_selector() {
 #endif
 
 #if USE_NESPAD
-        // joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-        joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-        joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
-        joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
         joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
-        joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
-        joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
-        joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+        joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
+        joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
+        joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
         joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
+        joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+        joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
+        joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
 #endif
         if (!joypad_bits.start) {
             /* copy the rom from the SD card to flash and start the game */
@@ -1210,6 +1209,7 @@ int main() {
     /* Initialise USB serial connection for debugging. */
     stdio_init_all();
     // time_init();
+    sleep_ms(5000);
 
     putstdio("INIT: ");
 
@@ -1224,8 +1224,8 @@ int main() {
 #endif
 
 #if USE_NESPAD
-    printf("NESPAD ");
-    nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
+    printf("NESPAD %i", nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT));
+
 #endif
 
 #if ENABLE_SOUND
@@ -1328,14 +1328,14 @@ int main() {
             prev_joypad_bits.start = gb.direct.joypad_bits.start;
 
 #if USE_NESPAD
-            joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-            joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
-            joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
             joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
-            joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
-            joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
-            joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+            joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
+            joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
+            joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
             joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
+            joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
+            joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
+            joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
 #endif
 
             gb.direct.joypad_bits.up = joypad_bits.up;
