@@ -13,6 +13,7 @@ add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
 add_subdirectory(drivers/vga)
 add_subdirectory(drivers/nespad)
+add_subdirectory(drivers/i2s)
 
 add_executable(gameboy
         src/main.cpp
@@ -22,11 +23,15 @@ add_executable(gameboy
 target_include_directories(gameboy PRIVATE inc ext/minigb_apu)
 
 target_link_libraries(gameboy
+        i2s
+
         vga
         ps2kbd
         sdcard
         fatfs
         nespad
+
+
 
         pico_stdlib
         pico_stdio
@@ -63,13 +68,12 @@ target_compile_definitions(gameboy PRIVATE
         SDCARD_PIN_SPI0_MISO=4
 
         # PS2KBD
-        USE_PS2_KBD
         PS2KBD_GPIO_FIRST=0
 
         # NES Gamepad
         NES_GPIO_CLK=14
-        NES_GPIO_DATA=15
-        NES_GPIO_LAT=16
+        NES_GPIO_LAT=15
+        NES_GPIO_DATA=16
 
         # Other
         FF_USE_FIND

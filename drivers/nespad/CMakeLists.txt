@@ -10,8 +10,3 @@ target_link_libraries(nespad INTERFACE hardware_pio)
 target_include_directories(nespad INTERFACE
   ${CMAKE_CURRENT_LIST_DIR}
 )
-
-
-pico_generate_pio_header(nespad 
-  ${CMAKE_CURRENT_LIST_DIR}/nespad.pio
-)

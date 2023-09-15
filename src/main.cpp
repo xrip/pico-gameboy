@@ -16,9 +16,9 @@
 
 // Peanut-GB emulator settings
 #define ENABLE_LCD 1
-#define ENABLE_SOUND 0
+#define ENABLE_SOUND 1
 #define ENABLE_SDCARD 1
-#define USE_PS2_KBD 1
+#define USE_PS2_KBD 0
 #define USE_NESPAD 1
 
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
@@ -28,7 +28,6 @@
 #include <cstring>
 
 /* RP2040 Headers */
-#include <hardware/pio.h>
 #include <hardware/sync.h>
 #include <hardware/flash.h>
 #include <hardware/timer.h>
@@ -38,6 +37,11 @@
 #include <pico/multicore.h>
 #include <sys/unistd.h>
 
+#if ENABLE_SOUND
+#include "i2s.h"
+#include "minigb_apu.h"
+#endif
+
 /* Project headers */
 #include "hedley.h"
 #include "peanut_gb.h"
@@ -45,10 +49,18 @@
 
 /* Murmulator board */
 #include "vga.h"
-#include "ps2kbd_mrmltr.h"
-#include "nespad.h"
 #include "f_util.h"
 #include "ff.h"
+
+
+
+#if USE_NESPAD
+#include "nespad.h"
+#endif
+
+#if USE_PS2_KBD
+#include "ps2kbd_mrmltr.h"
+#endif
 
 /** Definition of ROM data
  * We're going to erase and reprogram a region 1Mb from the start of the flash
@@ -67,18 +79,16 @@ struct semaphore vga_start_semaphore;
 static FATFS fs;
 
 #if ENABLE_SOUND
-#include "minigb_apu.h"
-#define AUDIO_PIN 27 // you can change this to whatever you like
-int16_t stream[1098];
-
+uint16_t *stream;
 #endif
+
 #define X2(a) (a | (a << 8))
 #define X4(a) (a | (a << 8) | (a << 16) | (a << 24))
 #define VGA_RGB_222(r, g, b) ((r << 4) | (g << 2) | b)
 
 // Function to convert RGB565 to RGB222
 uint8_t convertRGB565toRGB222(uint16_t color565) {
-    // Extract the red, green, and blue components from the RGB565 color
+    // Extract the red, green, and blue components from the RGB55 color
     uint8_t red = (color565 >> 11) & 0x1F;
     uint8_t green = (color565 >> 5) & 0x3F;
     uint8_t blue = color565 & 0x1F;
@@ -105,6 +115,65 @@ struct joypad_bits_t {
 
 static joypad_bits_t joypad_bits = {true, true, true, true, true, true, true, true, true};
 static joypad_bits_t prev_joypad_bits = {true, true, true, true, true, true, true, true, true};
+
+#if USE_NESPAD
+void nespad_tick() {
+    nespad_read();
+
+    bool right = (nespad_state & 0x80) ? 1 : 0;
+    bool left = (nespad_state & 0x40) ? 1 : 0;
+    bool down = (nespad_state & 0x20) ? 1 : 0;
+    bool up = (nespad_state & 0x10) ? 1 : 0;
+    bool start = (nespad_state & 0x08) ? 1 : 0;
+    bool select = (nespad_state & 0x04) ? 1 : 0;
+    bool b = (nespad_state & 0x02) ? 1 : 0;
+    bool a = (nespad_state & 0x01) ? 1 : 0;
+
+    if (start) {
+        joypad_bits.start = false;
+    } else if (joypad_bits.start == 0 && !start) {
+        joypad_bits.start = true;
+    }
+    if (select) {
+        joypad_bits.select = false;
+    } else if (joypad_bits.select == 0 && !select) {
+        joypad_bits.select = true;
+    }
+
+    if (a) {
+        joypad_bits.a = false;
+    } else if (joypad_bits.a == 0 && !a) {
+        joypad_bits.a = true;
+    }
+    if (b) {
+        joypad_bits.b = false;
+    } else if (joypad_bits.b == 0 && !b) {
+        joypad_bits.b = true;
+    }
+
+    if (up) {
+        joypad_bits.up = false;
+    } else if (joypad_bits.up == 0 && !up) {
+        joypad_bits.up = true;
+    }
+    if (down) {
+        joypad_bits.down = false;
+    } else if (joypad_bits.down == 0 && !down) {
+        joypad_bits.down = true;
+    }
+    if (left) {
+        joypad_bits.left = false;
+    } else if (joypad_bits.left == 0 && !left) {
+        joypad_bits.left = true;
+    }
+    if (right) {
+        joypad_bits.right = false;
+    } else if (joypad_bits.right == 0 && !right) {
+        joypad_bits.right = true;
+    }
+}
+#endif
+
 struct gb_s gb;
 uint16_t screen[LCD_HEIGHT][LCD_WIDTH];
 
@@ -1129,14 +1198,7 @@ void rom_file_selector() {
 #endif
 
 #if USE_NESPAD
-        joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
-        joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
-        joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
-        joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-        joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
-        joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
-        joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
-        joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
+        nespad_tick();
 #endif
         if (!joypad_bits.start) {
             /* copy the rom from the SD card to flash and start the game */
@@ -1209,7 +1271,7 @@ int main() {
     /* Initialise USB serial connection for debugging. */
     stdio_init_all();
     // time_init();
-    sleep_ms(5000);
+    //sleep_ms(5000);
 
     putstdio("INIT: ");
 
@@ -1224,15 +1286,25 @@ int main() {
 #endif
 
 #if USE_NESPAD
-    printf("NESPAD %i", nespad_begin(266000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT));
-
+    printf("NESPAD %i", nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT));
 #endif
 
 #if ENABLE_SOUND
     printf("SOUND ");
-    //    gpio_set_function(AUDIO_PIN, GPIO_FUNC_PWM);
 
+    // Allocate memory for the stream buffer
+    stream= static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
+    assert(stream!=NULL);
+    memset(stream,0,AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
+
+    // Initialize I2S sound driver
+    i2s_config_t i2s_config = i2s_get_default_config();
+    i2s_config.sample_freq=AUDIO_SAMPLE_RATE;
+    i2s_config.dma_trans_count =AUDIO_SAMPLES;
+    i2s_volume(&i2s_config,0);
+    i2s_init(&i2s_config);
 #endif
+
 
     /* Start Core1, which processes requests to the LCD. */
     putstdio("CORE1 ");
@@ -1240,6 +1312,14 @@ int main() {
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_loop);
     sem_release(&vga_start_semaphore);
+
+#if ENABLE_SOUND
+    // Initialize audio emulation
+    audio_init();
+
+    putstdio("AUDIO ");
+#endif
+
 
     while (true) {
         bool restart = false;
@@ -1292,10 +1372,6 @@ int main() {
 
         while (!restart) {
             int input;
-#if USE_NESPAD
-            nespad_read_start();
-#endif
-
 #if USE_PS2_KBD
             ps2kbd.tick();
 #endif
@@ -1310,10 +1386,9 @@ int main() {
             frames++;
 
 #if ENABLE_SOUND
-            if (!gb.direct.frame_skip)
-            {
-                audio_callback(NULL, stream, 1098);
-                // i2s_dma_write(&i2s_config, stream);
+            if(!gb.direct.frame_skip) {
+                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
+                i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
 
@@ -1328,14 +1403,7 @@ int main() {
             prev_joypad_bits.start = gb.direct.joypad_bits.start;
 
 #if USE_NESPAD
-            joypad_bits.right &= (nespad_state & 0x01) ? 0 : 1;
-            joypad_bits.left &= (nespad_state & 0x02) ? 0 : 1;
-            joypad_bits.down &= (nespad_state & 0x04) ? 0 : 1;
-            joypad_bits.up &= (nespad_state & 0x08) ? 0 : 1;
-            joypad_bits.start &= (nespad_state & 0x10) ? 0 : 1;
-            joypad_bits.select &= (nespad_state & 0x20) ? 0 : 1;
-            joypad_bits.b &= (nespad_state & 0x40) ? 0 : 1;
-            joypad_bits.a &= (nespad_state & 0x80) ? 0 : 1;
+            nespad_tick();
 #endif
 
             gb.direct.joypad_bits.up = joypad_bits.up;
@@ -1492,9 +1560,6 @@ int main() {
                 default:
                     break;
             }
-#if USE_NESPAD
-            nespad_read_finish();
-#endif
         }
         out:
         puts("\nEmulation Ended");
