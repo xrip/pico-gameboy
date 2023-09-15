@@ -10,7 +10,8 @@ Murmulator devboard have MicroSD card slot, PS/2 keyboard input and VGA output
 * START - Enter key
 * SELECT - Backspace key
 
-To reboot emulator press HOME key 
+To reboot emulator press HOME key.
+You can change game palle by pressing Backspace+Left or Backspace+Right keys
 
 # Hardware needed
 To get it working you should have an Murmulator (development) board with VGA output. Schematics available here at https://github.com/AlexEkb4ever/MURMULATOR_classical_scheme
