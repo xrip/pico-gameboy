@@ -14,10 +14,8 @@
   set x, 7        side 0      ; Set bit counter
   set pins, 0     side 0      ; Latch low
 bitloop:
-;  in pins, 1      side 0 [4]  ; Read bit on falling clock or latch, wait 6 uS ------
-  in pins, 2      side 0 [4]  ; Read bit on falling clock or latch, wait 6 uS +++++++ 
+  in pins, 1      side 0 [4]  ; Read bit on falling clock or latch, wait 6 uS
   set pins, 0     side 1 [5]  ; Clock high, wait for 6 uS
   jmp x-- bitloop side 0      ; Clock low, repeat for 8 bits
 ; Autopush will write byte to FIFO at this point
 .wrap
-

@@ -22,18 +22,18 @@ add_executable(gameboy
 target_include_directories(gameboy PRIVATE inc ext/minigb_apu)
 
 target_link_libraries(gameboy
-    vga
-    ps2kbd
-    sdcard
-    fatfs 
-    nespad       
+        vga
+        ps2kbd
+        sdcard
+        fatfs
+        nespad
 
-        pico_stdlib 
-	pico_stdio 
-	pico_bootrom 
-	pico_multicore 
-	pico_stdio  
-	pico_multicore
+        pico_stdlib
+        pico_stdio
+        pico_bootrom
+        pico_multicore
+        pico_stdio
+        pico_multicore
 
         hardware_clocks hardware_pio hardware_vreg hardware_pio hardware_pwm
         hardware_sync hardware_pll hardware_spi hardware_irq hardware_dma
@@ -50,33 +50,37 @@ target_compile_definitions(gameboy PRIVATE
         PICO_PRINTF_SUPPORT_LONG_LONG=1
         PICO_PRINTF_SUPPORT_PTRDIFF_T=0
 
-# VGA
-VGA_GPIO_FIRST=6 
-VGA_GPIO_OUTNUM=6 
-VGA_GPIO_SYNC=12
-VGA_VSYNC=13
-# SDCARD
-SDCARD_PIN_SPI0_CS=5
-SDCARD_PIN_SPI0_SCK=2
-SDCARD_PIN_SPI0_MOSI=3
-SDCARD_PIN_SPI0_MISO=4
-# PS2KBD
-USE_PS2_KBD    
-PS2KBD_GPIO_FIRST=0
-# NES Gamepad
-NES_GPIO_CLK=14
-NES_GPIO_LAT=15
-NES_GPIO_DATA=16
-# Other
-FF_USE_FIND
+        # VGA
+        VGA_GPIO_FIRST=6
+        VGA_GPIO_OUTNUM=6
+        VGA_GPIO_SYNC=12
+        VGA_VSYNC=13
+
+        # SDCARD
+        SDCARD_PIN_SPI0_CS=5
+        SDCARD_PIN_SPI0_SCK=2
+        SDCARD_PIN_SPI0_MOSI=3
+        SDCARD_PIN_SPI0_MISO=4
+
+        # PS2KBD
+        USE_PS2_KBD
+        PS2KBD_GPIO_FIRST=0
+
+        # NES Gamepad
+        NES_GPIO_CLK=14
+        NES_GPIO_LAT=15
+        NES_GPIO_DATA=16
+
+        # Other
+        FF_USE_FIND
 )
 
 
 function(pico_add_verbose_dis_output TARGET)
-	add_custom_command(TARGET ${TARGET} POST_BUILD
-		COMMAND ${CMAKE_OBJDUMP} -h $<TARGET_FILE:${TARGET}> >$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
-		COMMAND ${CMAKE_OBJDUMP} -drwCSl $<TARGET_FILE:${TARGET}> >>$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
-		)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+            COMMAND ${CMAKE_OBJDUMP} -h $<TARGET_FILE:${TARGET}> >$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
+            COMMAND ${CMAKE_OBJDUMP} -drwCSl $<TARGET_FILE:${TARGET}> >>$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
+    )
 endfunction()
 
 #pico_set_binary_type(gameboy copy_to_ram)

@@ -1,4 +1,5 @@
 /**
+ * Copyright (C) 2023 by Ilya Maslennikov <xrip@xrip.ru>
  * Copyright (C) 2022 by Mahyar Koshkouei <mk@deltabeard.com>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -21,37 +22,28 @@
 #define USE_NESPAD 1
 
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
-#define PEANUT_GB_USE_BIOS 0
 
 /* C Headers */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 
 /* RP2040 Headers */
 #include <hardware/pio.h>
-#include <hardware/clocks.h>
-#include <hardware/dma.h>
-#include <hardware/spi.h>
 #include <hardware/sync.h>
 #include <hardware/flash.h>
 #include <hardware/timer.h>
 #include <hardware/vreg.h>
-#include <pico/bootrom.h>
 #include <pico/stdio.h>
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <sys/unistd.h>
-#include <hardware/irq.h>
-#include <hardware/pwm.h> // pwm
 
 /* Project headers */
 #include "hedley.h"
-#include "minigb_apu.h"
 #include "peanut_gb.h"
 #include "gbcolors.h"
 
-/* Murm*/
+/* Murmulator board */
 #include "vga.h"
 #include "ps2kbd_mrmltr.h"
 #include "nespad.h"
@@ -63,18 +55,19 @@
  * Once done, we can access this at XIP_BASE + 1Mb.
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
-#define FLASH_TARGET_OFFSET (512 * 1024)
+#define FLASH_TARGET_OFFSET (1024 * 1024)
 const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET);
-static unsigned char rom_bank0[8192];
+static unsigned char rom_bank0[65535];
 
 static uint8_t ram[32768];
 
-static const sVmode *vmode = NULL;
+static const sVmode *vmode = nullptr;
 struct semaphore vga_start_semaphore;
 
 static FATFS fs;
 
 #if ENABLE_SOUND
+#include "minigb_apu.h"
 #define AUDIO_PIN 27 // you can change this to whatever you like
 int16_t stream[1098];
 
@@ -773,69 +766,68 @@ void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
 
 void print(hid_keyboard_report_t const *report) {
     printf("HID key report modifiers %2.2X report ", report->modifier);
-    for (int i = 0; i < 6; ++i)
-        printf("%2.2X", report->keycode[i]);
+    for (unsigned char i : report->keycode)
+        printf("%2.2X", i);
     printf("\r\n");
 }
 
 static bool isInReport(hid_keyboard_report_t const *report, const unsigned char keycode) {
-    for (unsigned int i = 0; i < 6; i++) {
-        if (report->keycode[i] == keycode)
+    for (unsigned char i : report->keycode) {
+        if (i == keycode)
             return true;
     }
     return false;
 }
 
-void
-__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
+void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
     print(report);
     // HOME button
     if (isInReport(report, 0x4A)) {
-        joypad_bits.home = 0;
+        joypad_bits.home = false;
     } else if (joypad_bits.home == 0 && !isInReport(report, 0x4A)) {
-        joypad_bits.home = 1;
+        joypad_bits.home = true;
     }
     if (isInReport(report, 0x28)) {
-        joypad_bits.start = 0;
+        joypad_bits.start = false;
     } else if (joypad_bits.start == 0 && !isInReport(report, 0x28)) {
-        joypad_bits.start = 1;
+        joypad_bits.start = true;
     }
     if (isInReport(report, 0x2A)) {
-        joypad_bits.select = 0;
+        joypad_bits.select = false;
     } else if (joypad_bits.select == 0 && !isInReport(report, 0x2A)) {
-        joypad_bits.select = 1;
+        joypad_bits.select = true;
     }
 
     if (isInReport(report, 0x1D)) {
-        joypad_bits.a = 0;
+        joypad_bits.a = false;
     } else if (joypad_bits.a == 0 && !isInReport(report, 0x1D)) {
-        joypad_bits.a = 1;
+        joypad_bits.a = true;
     }
     if (isInReport(report, 0x1B)) {
-        joypad_bits.b = 0;
+        joypad_bits.b = false;
     } else if (joypad_bits.b == 0 && !isInReport(report, 0x1B)) {
-        joypad_bits.b = 1;
+        joypad_bits.b = true;
     }
 
     if (isInReport(report, 0x52)) {
-        joypad_bits.up = 0;
+        joypad_bits.up = false;
     } else if (joypad_bits.up == 0 && !isInReport(report, 0x52)) {
-        joypad_bits.up = 1;
+        joypad_bits.up = true;
     }
     if (isInReport(report, 0x51)) {
-        joypad_bits.down = 0;
+        joypad_bits.down = false;
     } else if (joypad_bits.down == 0 && !isInReport(report, 0x51)) {
-        joypad_bits.down = 1;
+        joypad_bits.down = true;
     }
     if (isInReport(report, 0x50)) {
-        joypad_bits.left = 0;
+        joypad_bits.left = false;
     } else if (joypad_bits.left == 0 && !isInReport(report, 0x50)) {
-        joypad_bits.left = 1;
+        joypad_bits.left = true;
     }
     if (isInReport(report, 0x4F)) {
-        joypad_bits.right = 0;
+        joypad_bits.right = false;
     } else if (joypad_bits.right == 0 && !isInReport(report, 0x4F)) {
-        joypad_bits.right = 1;
+        joypad_bits.right = true;
     }
 }
 
@@ -961,7 +953,7 @@ void read_cart_ram_file(struct gb_s *gb) {
             printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
         }
     }
-    printf("I read_cart_ram_file(%s) COMPLETE (%lu bytes)\n", filename, save_size);
+    printf("I read_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
 /**
@@ -995,14 +987,14 @@ void write_cart_ram_file(struct gb_s *gb) {
             printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
         }
     }
-    printf("I write_cart_ram_file(%s) COMPLETE (%lu bytes)\n", filename, save_size);
+    printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
 /**
  * Load a .gb rom file in flash from the SD card
  */
 void load_cart_rom_file(char *filename) {
-    UINT br;
+    UINT br = 0;
     uint8_t buffer[FLASH_SECTOR_SIZE];
     bool mismatch = false;
 
@@ -1053,7 +1045,7 @@ void load_cart_rom_file(char *filename) {
         printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
     }
 
-    printf("I load_cart_rom_file(%s) COMPLETE (%lu bytes)\n", filename, br);
+    printf("I load_cart_rom_file(%s) COMPLETE (%u bytes)\n", filename, br);
 }
 
 /**
@@ -1113,7 +1105,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
  * Copy your *.gb rom files to the root directory of the SD card
  */
 void rom_file_selector() {
-    uint16_t num_page;
+    uint16_t num_page = 0;
     char filename[22][256];
     uint16_t num_file;
 
@@ -1201,7 +1193,7 @@ void rom_file_selector() {
 
 #endif
 
-int main(void) {
+int main() {
     enum gb_init_error_e ret;
 
     /* Overclock. */
@@ -1262,7 +1254,7 @@ int main(void) {
         /* Initialise GB context. */
         memcpy(rom_bank0, rom, sizeof(rom_bank0));
         ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
-                      &gb_cart_ram_write, &gb_error, NULL);
+                      &gb_cart_ram_write, &gb_error, nullptr);
         putstdio("GB ");
 
         if (ret != GB_INIT_NO_ERROR) {
