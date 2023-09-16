@@ -827,8 +827,8 @@ void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
         }
 
         //	 Грязный хак чтобы записать 8 байт
-        x += 4;
-        if (i >= 39) {
+        x += 8;
+        if (i >= 19) {
             break;
         }
     }
@@ -953,11 +953,12 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
 }
 
 typedef enum {
-    RESOLUTION_2X2,
-    RESOLUTION_3X3,
     RESOLUTION_4X3,
+    RESOLUTION_3X3,
+    RESOLUTION_2X2,
+    //RESOLUTION_NATIVE,
 } resolution_t;
-resolution_t resolution = RESOLUTION_2X2;
+resolution_t resolution = RESOLUTION_3X3;
 
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_loop)() {
@@ -973,36 +974,45 @@ void __time_critical_func(render_loop)() {
 
         switch (resolution) {
             case RESOLUTION_4X3:
-                if (y < LCD_HEIGHT * 3) {
+                if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
-                        (uint32_t &) linebuf->line[x] = X4(screen[y / 3][x / 4]);
+                        (uint32_t &) linebuf->line[x] = X4(screen[(y - 24) / 3][x / 4]);
                     }
                 } else {
                     memset(&linebuf->line, 0, 640);
                 }
                 break;
             case RESOLUTION_3X3:
-                if (y < LCD_HEIGHT * 3) {
+                if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH; x++) {
-                        uint16_t x3 = x * 3;
-                        uint8_t color = screen[y / 3][x];
+                        uint16_t x3 = 80 + (x * 3);
+                        uint8_t color = screen[(y - 24) / 3][x];
                         linebuf->line[x3] = color;
-                        linebuf->line[x3+1] = color;
-                        linebuf->line[x3+2] = color;
+                        linebuf->line[x3 + 1] = color;
+                        linebuf->line[x3 + 2] = color;
                     }
                 } else {
                     memset(&linebuf->line, 0, 640);
                 }
                 break;
             case RESOLUTION_2X2:
-            default:
-                if (y > 48 && y < (48 - LCD_HEIGHT * 2)) {
+                //if (y >= 48 && y < 48 + LCD_HEIGHT) {
+                if (y >= 96 && y < (96 + LCD_HEIGHT * 2)) {
                     for (int x = 0; x < LCD_WIDTH * 2; x += 2) {
-                        (uint16_t &) linebuf->line[160+x] = X2(screen[(y - 48) / 2][x / 2]);
+                        (uint16_t &) linebuf->line[160 + x] = X2(screen[(y - 96) / 2][x / 2]);
                     }
                 } else {
                     memset(&linebuf->line, 0, 640);
                 }
+                break;
+            //case RESOLUTION_NATIVE:
+            default:
+                if (y >= 168 && y < 168 + LCD_HEIGHT) {
+                    memcpy(&linebuf->line[240], &screen[y-168][0], LCD_WIDTH);
+                } else {
+                    memset(&linebuf->line, 0, 640);
+                }
+
         }
     }
 
@@ -1456,6 +1466,12 @@ int main() {
                     // i2s_decrease_volume(&i2s_config);
                 }
 #endif
+                if (!gb.direct.joypad_bits.up && prev_joypad_bits.up) {
+                    resolution = static_cast<resolution_t>((resolution + 1) % 3);
+                }
+                if (!gb.direct.joypad_bits.down && prev_joypad_bits.down) {
+                    resolution = static_cast<resolution_t>((resolution - 1) % 3);
+                }
                 if (!gb.direct.joypad_bits.right && prev_joypad_bits.right) {
                     /* select + right: select the next manual color palette */
                     if (manual_palette_selected < 12) {
