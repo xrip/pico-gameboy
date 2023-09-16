@@ -178,7 +178,7 @@ void nespad_tick() {
 #endif
 
 struct gb_s gb;
-uint16_t screen[LCD_HEIGHT][LCD_WIDTH];
+uint8_t screen[LCD_HEIGHT][LCD_WIDTH];
 
 #define putstdio(x) write(1, x, strlen(x))
 
@@ -952,6 +952,13 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
 #endif
 }
 
+typedef enum {
+    RESOLUTION_2X2,
+    RESOLUTION_3X3,
+    RESOLUTION_4X3,
+} resolution_t;
+resolution_t resolution = RESOLUTION_2X2;
+
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_loop)() {
     multicore_lockout_victim_init();
@@ -962,14 +969,40 @@ void __time_critical_func(render_loop)() {
     VgaInit(vmode, 640, 480);
 
     while (linebuf = get_vga_line()) {
-
-        // uint32_t *buf = (uint32_t *)&(linebuf->line);
         uint32_t y = linebuf->row;
 
-        if (y >= 48 && y < 48 + LCD_HEIGHT) {
-            memcpy(&linebuf->line[160], &screen[y - 48][0], LCD_WIDTH * 2);
-        } else {
-            memset(&linebuf->line, 0, 640);
+        switch (resolution) {
+            case RESOLUTION_4X3:
+                if (y < LCD_HEIGHT * 3) {
+                    for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
+                        (uint32_t &) linebuf->line[x] = X4(screen[y / 3][x / 4]);
+                    }
+                } else {
+                    memset(&linebuf->line, 0, 640);
+                }
+                break;
+            case RESOLUTION_3X3:
+                if (y < LCD_HEIGHT * 3) {
+                    for (int x = 0; x < LCD_WIDTH; x++) {
+                        uint16_t x3 = x * 3;
+                        uint8_t color = screen[y / 3][x];
+                        linebuf->line[x3] = color;
+                        linebuf->line[x3+1] = color;
+                        linebuf->line[x3+2] = color;
+                    }
+                } else {
+                    memset(&linebuf->line, 0, 640);
+                }
+                break;
+            case RESOLUTION_2X2:
+            default:
+                if (y > 48 && y < (48 - LCD_HEIGHT * 2)) {
+                    for (int x = 0; x < LCD_WIDTH * 2; x += 2) {
+                        (uint16_t &) linebuf->line[160+x] = X2(screen[(y - 48) / 2][x / 2]);
+                    }
+                } else {
+                    memset(&linebuf->line, 0, 640);
+                }
         }
     }
 
@@ -986,8 +1019,7 @@ void lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_
     // struct priv_t *priv = (priv_t *)(gb->direct.priv);
 
     for (unsigned int x = 0; x < LCD_WIDTH; x++)
-        screen[y][x] = X2(palette[(pixels[x] & LCD_PALETTE_ALL) >> 4]
-                          [pixels[x] & 3]);
+        screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
     // my_palette[pixels[x] & 3];
 }
 
@@ -1281,7 +1313,7 @@ int main() {
 
     printf("VGA ");
     sleep_ms(50);
-    vmode = Video(DEV_VGA, RES_HVGA);
+    vmode = Video(DEV_VGA, RES_VGA);   //R
     sleep_ms(50);
 
 #if USE_PS2_KBD

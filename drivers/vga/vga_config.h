@@ -9,10 +9,10 @@
 // ****************************************************************************
 
 // === Configuration
-#define MAXX		320 //640	// max. resolution in X direction (must be power of 4)
-#define MAXY		240 //480	// max. resolution in Y direction
+#define MAXX		640 //320 //640	// max. resolution in X direction (must be power of 4)
+#define MAXY		480 //240 //480	// max. resolution in Y direction
 
-#define MAXLINE		525 //700	// max. number of scanlines (including sync and dark lines)
+#define MAXLINE	700 //525 //700	// max. number of scanlines (including sync and dark lines)
 
 // === Scanline render buffers (800 pixels: default size of buffers = 2*4*(800+8+800+24)+800 = 13856 bytes
 //    Requirements by format, base layer 0, 1 wrap X segment:
