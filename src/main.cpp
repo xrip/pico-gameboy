@@ -38,8 +38,10 @@
 #include <sys/unistd.h>
 
 #if ENABLE_SOUND
+
 #include "i2s.h"
 #include "minigb_apu.h"
+
 #endif
 
 /* Project headers */
@@ -53,13 +55,14 @@
 #include "ff.h"
 
 
-
 #if USE_NESPAD
 #include "nespad.h"
 #endif
 
 #if USE_PS2_KBD
+
 #include "ps2kbd_mrmltr.h"
+
 #endif
 
 /** Definition of ROM data
@@ -835,20 +838,21 @@ void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
 
 void print(hid_keyboard_report_t const *report) {
     printf("HID key report modifiers %2.2X report ", report->modifier);
-    for (unsigned char i : report->keycode)
+    for (unsigned char i: report->keycode)
         printf("%2.2X", i);
     printf("\r\n");
 }
 
 static bool isInReport(hid_keyboard_report_t const *report, const unsigned char keycode) {
-    for (unsigned char i : report->keycode) {
+    for (unsigned char i: report->keycode) {
         if (i == keycode)
             return true;
     }
     return false;
 }
 
-void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
+void
+__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
     print(report);
     // HOME button
     if (isInReport(report, 0x4A)) {
@@ -1293,15 +1297,15 @@ int main() {
     printf("SOUND ");
 
     // Allocate memory for the stream buffer
-    stream= static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
-    assert(stream!=NULL);
-    memset(stream,0,AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
+    stream = static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
+    assert(stream != NULL);
+    memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
 
     // Initialize I2S sound driver
     i2s_config_t i2s_config = i2s_get_default_config();
-    i2s_config.sample_freq=AUDIO_SAMPLE_RATE;
-    i2s_config.dma_trans_count =AUDIO_SAMPLES;
-    i2s_volume(&i2s_config,0);
+    i2s_config.sample_freq = AUDIO_SAMPLE_RATE;
+    i2s_config.dma_trans_count = AUDIO_SAMPLES;
+    i2s_volume(&i2s_config, 0);
     i2s_init(&i2s_config);
 #endif
 
@@ -1354,13 +1358,6 @@ int main() {
         putstdio("LCD ");
 #endif
 
-#if ENABLE_SOUND
-        // Initialize audio emulation
-        audio_init();
-
-        putstdio("AUDIO ");
-#endif
-
 #if ENABLE_SDCARD
         /* Load Save File. */
         read_cart_ram_file(&gb);
@@ -1386,7 +1383,7 @@ int main() {
             frames++;
 
 #if ENABLE_SOUND
-            if(!gb.direct.frame_skip) {
+            if (!gb.direct.frame_skip) {
                 audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
@@ -1418,13 +1415,11 @@ int main() {
             /* hotkeys (select + * combo)*/
             if (!gb.direct.joypad_bits.select) {
 #if ENABLE_SOUND
-                if (!gb.direct.joypad_bits.up && prev_joypad_bits.up)
-                {
+                if (!gb.direct.joypad_bits.up && prev_joypad_bits.up) {
                     /* select + up: increase sound volume */
                     // i2s_increase_volume(&i2s_config);
                 }
-                if (!gb.direct.joypad_bits.down && prev_joypad_bits.down)
-                {
+                if (!gb.direct.joypad_bits.down && prev_joypad_bits.down) {
                     /* select + down: decrease sound volume */
                     // i2s_decrease_volume(&i2s_config);
                 }
