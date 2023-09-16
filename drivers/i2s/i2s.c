@@ -30,6 +30,7 @@
 
 #ifdef PWM_PIN
 #include "hardware/pwm.h"
+#include "hardware/clocks.h"
 #endif
 
 /**
@@ -56,7 +57,13 @@ i2s_config_t i2s_get_default_config(void) {
  * Initialize the I2S driver. Must be called before calling i2s_write or i2s_dma_write
  * i2s_config: I2S context obtained by i2s_get_default_config()
  */
+
+
 void i2s_init(i2s_config_t *i2s_config) {
+
+
+#ifndef PWM_PIN   
+
     uint8_t func=GPIO_FUNC_PIO1;    // TODO: GPIO_FUNC_PIO0 for pio0 or GPIO_FUNC_PIO1 for pio1
     gpio_set_function(i2s_config->data_pin, func);
     gpio_set_function(i2s_config->clock_pin_base, func);
@@ -74,7 +81,7 @@ void i2s_init(i2s_config_t *i2s_config) {
     pio_sm_set_clkdiv_int_frac(i2s_config->pio, i2s_config->sm , divider >> 8u, divider & 0xffu);
 
     pio_sm_set_enabled(i2s_config->pio, i2s_config->sm, false);
-
+#endif
     /* Allocate memory for the DMA buffer */
     i2s_config->dma_buf=malloc(i2s_config->dma_trans_count*sizeof(uint32_t));
 
@@ -84,7 +91,7 @@ void i2s_init(i2s_config_t *i2s_config) {
     dma_channel_config dma_config = dma_channel_get_default_config(i2s_config->dma_channel);
     channel_config_set_read_increment(&dma_config, true);
     channel_config_set_write_increment(&dma_config, false);
-    channel_config_set_dreq(&dma_config, pio_get_dreq(i2s_config->pio, i2s_config->sm, true));
+
     channel_config_set_transfer_data_size(&dma_config, DMA_SIZE_32);
 
     uint32_t* addr_write_DMA=&(i2s_config->pio->txf[i2s_config->sm]);
@@ -93,13 +100,23 @@ void i2s_init(i2s_config_t *i2s_config) {
     gpio_set_function(PWM_PIN1, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(PWM_PIN0);
 
-    channel_config_set_dreq(&dma_config, pwm_get_dreq(slice_num));     
+
    
     pwm_config c_pwm=pwm_get_default_config();
     pwm_config_set_clkdiv(&c_pwm,1.0);
-    pwm_config_set_wrap(&c_pwm,(1<<12)-1);//MAX PWM value
+    //pwm_config_set_wrap(&c_pwm,(1<<12)-1);//MAX PWM value
+    pwm_config_set_wrap(&c_pwm,clock_get_hz(clk_sys)/44100);//MAX PWM value
     pwm_init(slice_num,&c_pwm,true);
+
+    //Для синхронизации используем другой произвольный канал ШИМ
+
+
+    channel_config_set_dreq(&dma_config, pwm_get_dreq(slice_num));     
+
+
     addr_write_DMA=(uint32_t*)&pwm_hw->slice[slice_num].cc;
+#else
+    channel_config_set_dreq(&dma_config, pio_get_dreq(i2s_config->pio, i2s_config->sm, true));
 #endif
     
     dma_channel_configure(i2s_config->dma_channel,
@@ -123,7 +140,7 @@ void i2s_init(i2s_config_t *i2s_config) {
  */
 void i2s_write(const i2s_config_t *i2s_config,const int16_t *samples,const size_t len) {
     for(size_t i=0;i<len;i++) {
-            pio_sm_put_blocking(i2s_config->pio, i2s_config->sm, (uint32_t)samples[i]*0);
+            pio_sm_put_blocking(i2s_config->pio, i2s_config->sm, (uint32_t)samples[i]);
     }
 }
 
@@ -139,7 +156,9 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
 
 #ifdef PWM_PIN
     for(uint16_t i=0;i<i2s_config->dma_trans_count*2;i++) {
-            i2s_config->dma_buf[i] = samples[i]>>(6+i2s_config->volume);
+           
+            i2s_config->dma_buf[i] = (65536/2+(samples[i]))>>(5+i2s_config->volume);
+
         }
 #else
 
