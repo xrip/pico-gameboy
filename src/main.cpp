@@ -1562,9 +1562,9 @@ int main() {
                     end_time = time_us_64();
                     diff = end_time - start_time;
                     fps = ((uint64_t) frames * 1000 * 1000) / diff;
-                    printf("Frames: %u\n"
-                           "Time: %lu us\n"
-                           "FPS: %lu\n",
+                    printf("Frames: %u\r\n"
+                           "Time: %lu us\r\n"
+                           "FPS: %lu\r\n",
                            frames, diff, fps);
                     stdio_flush();
                     frames = 0;
