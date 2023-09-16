@@ -12,6 +12,7 @@ Murmulator devboard have MicroSD card slot, PS/2 keyboard input and VGA output
 
 To reboot emulator press HOME key.
 You can change game pallete by pressing Backspace+Left or Backspace+Right keys
+Backspace+Up/Down - change screen scaling (2x2, 3x3, 4x3)
 
 # Hardware needed
 To get it working you should have an Murmulator (development) board with VGA output. Schematics available here at https://github.com/AlexEkb4ever/MURMULATOR_classical_scheme
