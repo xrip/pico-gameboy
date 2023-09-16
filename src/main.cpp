@@ -1497,6 +1497,20 @@ int main() {
                     gb.direct.frame_skip = !gb.direct.frame_skip;
                     printf("I gb.direct.frame_skip = %d\n", gb.direct.frame_skip);
                 }
+
+                if (
+                        (!gb.direct.joypad_bits.a && prev_joypad_bits.a) &&
+                        (!gb.direct.joypad_bits.b && prev_joypad_bits.b) &&
+                        (!gb.direct.joypad_bits.start && prev_joypad_bits.start) &&
+
+                        ) {
+                    /* HOME button restart */
+#if ENABLE_SDCARD
+                    write_cart_ram_file(&gb);
+#endif
+                    restart = true;
+                    // goto out;
+                }
             }
 
             if (!joypad_bits.home && prev_joypad_bits.home) {
