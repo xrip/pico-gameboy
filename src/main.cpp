@@ -1501,7 +1501,7 @@ int main() {
                 if (
                         (!gb.direct.joypad_bits.a && prev_joypad_bits.a) &&
                         (!gb.direct.joypad_bits.b && prev_joypad_bits.b) &&
-                        (!gb.direct.joypad_bits.start && prev_joypad_bits.start) &&
+                        (!gb.direct.joypad_bits.start && prev_joypad_bits.start)
 
                         ) {
                     /* HOME button restart */
