@@ -465,8 +465,10 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
     // Dirty screen cleanup
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
+    char footer[80];
+    sprintf(footer, "=================== PAGE #%i -> NEXT PAGE / <- PREV. PAGE ====================", num_page);
+    draw_text(footer, 0, 29, 3, 11);
 
-    draw_text("=================== RIGHT -> NEXT PAGE / LEFT <- PREV. PAGE ====================", 0, 29, 3, 15);
     DIR dj;
     FILINFO fno;
     FRESULT fr;
@@ -519,12 +521,11 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
 void rom_file_selector() {
     uint16_t num_page = 0;
     char filenames[30][256];
-    uint16_t num_file;
 
     printf("Selecting ROM\r\n");
 
     /* display the first page with up to 22 rom files */
-    num_file = rom_file_selector_display_page(filenames, num_page);
+    uint16_t numfiles = rom_file_selector_display_page(filenames, num_page);
 
     /* select the first rom */
     uint8_t selected = 0;
@@ -560,7 +561,7 @@ void rom_file_selector() {
             /* select the next rom */
             draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
             selected++;
-            if (selected >= num_file)
+            if (selected >= numfiles)
                 selected = 0;
             draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
@@ -569,7 +570,7 @@ void rom_file_selector() {
             /* select the previous rom */
             draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
             if (selected == 0) {
-                selected = num_file - 1;
+                selected = numfiles - 1;
             } else {
                 selected--;
             }
@@ -579,11 +580,11 @@ void rom_file_selector() {
         if (!joypad_bits.right) {
             /* select the next page */
             num_page++;
-            num_file = rom_file_selector_display_page(filenames, num_page);
-            if (num_file == 0) {
+            numfiles = rom_file_selector_display_page(filenames, num_page);
+            if (numfiles == 0) {
                 /* no files in this page, go to the previous page */
                 num_page--;
-                num_file = rom_file_selector_display_page(filenames, num_page);
+                numfiles = rom_file_selector_display_page(filenames, num_page);
             }
             /* select the first file */
             selected = 0;
@@ -593,7 +594,7 @@ void rom_file_selector() {
         if ((!joypad_bits.left) && num_page > 0) {
             /* select the previous page */
             num_page--;
-            num_file = rom_file_selector_display_page(filenames, num_page);
+            numfiles = rom_file_selector_display_page(filenames, num_page);
             /* select the first file */
             selected = 0;
             draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
