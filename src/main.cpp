@@ -56,7 +56,9 @@
 
 
 #if USE_NESPAD
+
 #include "nespad.h"
+
 #endif
 
 #if USE_PS2_KBD
@@ -64,6 +66,8 @@
 #include "ps2kbd_mrmltr.h"
 
 #endif
+
+#include "VGA_ROM_F16.h"
 
 /** Definition of ROM data
  * We're going to erase and reprogram a region 1Mb from the start of the flash
@@ -79,6 +83,12 @@ static uint8_t ram[32768];
 static const sVmode *vmode = nullptr;
 struct semaphore vga_start_semaphore;
 
+struct gb_s gb;
+
+uint8_t screen[LCD_HEIGHT][LCD_WIDTH];
+char textmode[30][80];
+uint8_t colors[30][80];
+
 static FATFS fs;
 
 #if ENABLE_SOUND
@@ -88,6 +98,7 @@ uint16_t *stream;
 #define X2(a) (a | (a << 8))
 #define X4(a) (a | (a << 8) | (a << 16) | (a << 24))
 #define VGA_RGB_222(r, g, b) ((r << 4) | (g << 2) | b)
+#define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
 
 // Function to convert RGB565 to RGB222
 uint8_t convertRGB565toRGB222(uint16_t color565) {
@@ -113,822 +124,70 @@ struct joypad_bits_t {
     bool left: true;
     bool up: true;
     bool down: true;
-    bool home: true;
 };
 
-static joypad_bits_t keyboard_bits = {true, true, true, true, true, true, true, true, true};    //Keyboard
-static joypad_bits_t joypad_bits = {true, true, true, true, true, true, true, true, true};      //Joypad
-static joypad_bits_t prev_joypad_bits = {true, true, true, true, true, true, true, true, true};
+static joypad_bits_t keyboard_bits = { true, true, true, true, true, true, true, true };    //Keyboard
+static joypad_bits_t joypad_bits = { true, true, true, true, true, true, true, true };      //Joypad
+static joypad_bits_t prev_joypad_bits = { true, true, true, true, true, true, true, true };
 //-----------------------------------------------------------------------------
 #if USE_NESPAD
+
 void nespad_tick() {
     nespad_read();
 //-----------------------------------------------------------------------------
-    if (nespad_state & 0x01) {joypad_bits.a = false;} else {joypad_bits.a = true;}
-    if (nespad_state & 0x02) {joypad_bits.b = false;} else {joypad_bits.b = true;}
-    if (nespad_state & 0x04) {joypad_bits.select = false;} else {joypad_bits.select = true;}
-    if (nespad_state & 0x08) {joypad_bits.start = false;} else {joypad_bits.start = true;}
-    if (nespad_state & 0x10) {joypad_bits.up = false;} else {joypad_bits.up = true;}
-    if (nespad_state & 0x20) {joypad_bits.down = false;} else {joypad_bits.down = true;}
-    if (nespad_state & 0x40) {joypad_bits.left = false;} else {joypad_bits.left = true;}
-    if (nespad_state & 0x80) {joypad_bits.right = false;} else {joypad_bits.right = true;}
-    if ((nespad_state & 0x0F)==0x0F) {joypad_bits.home = false;} else {joypad_bits.home = true;} // Home key
+    if (nespad_state & 0x01) { joypad_bits.a = false; } else { joypad_bits.a = true; }
+    if (nespad_state & 0x02) { joypad_bits.b = false; } else { joypad_bits.b = true; }
+    if (nespad_state & 0x04) { joypad_bits.select = false; } else { joypad_bits.select = true; }
+    if (nespad_state & 0x08) { joypad_bits.start = false; } else { joypad_bits.start = true; }
+    if (nespad_state & 0x10) { joypad_bits.up = false; } else { joypad_bits.up = true; }
+    if (nespad_state & 0x20) { joypad_bits.down = false; } else { joypad_bits.down = true; }
+    if (nespad_state & 0x40) { joypad_bits.left = false; } else { joypad_bits.left = true; }
+    if (nespad_state & 0x80) { joypad_bits.right = false; } else { joypad_bits.right = true; }
 //-----------------------------------------------------------------------------
-/*
-    bool right = (nespad_state & 0x80) ? 1 : 0;
-    bool left = (nespad_state & 0x40) ? 1 : 0;
-    bool down = (nespad_state & 0x20) ? 1 : 0;
-    bool up = (nespad_state & 0x10) ? 1 : 0;
-    bool start = (nespad_state & 0x08) ? 1 : 0;
-    bool select = (nespad_state & 0x04) ? 1 : 0;
-    bool b = (nespad_state & 0x02) ? 1 : 0;
-    bool a = (nespad_state & 0x01) ? 1 : 0;
-
-    if (start) {
-        joypad_bits.start = false;
-    } else if (joypad_bits.start == 0 && !start) {
-        joypad_bits.start = true;
-    }
-    if (select) {
-        joypad_bits.select = false;
-    } else if (joypad_bits.select == 0 && !select) {
-        joypad_bits.select = true;
-    }
-
-    if (a) {
-        joypad_bits.a = false;
-    } else if (joypad_bits.a == 0 && !a) {
-        joypad_bits.a = true;
-    }
-    if (b) {
-        joypad_bits.b = false;
-    } else if (joypad_bits.b == 0 && !b) {
-        joypad_bits.b = true;
-    }
-
-    if (up) {
-        joypad_bits.up = false;
-    } else if (joypad_bits.up == 0 && !up) {
-        joypad_bits.up = true;
-    }
-    if (down) {
-        joypad_bits.down = false;
-    } else if (joypad_bits.down == 0 && !down) {
-        joypad_bits.down = true;
-    }
-    if (left) {
-        joypad_bits.left = false;
-    } else if (joypad_bits.left == 0 && !left) {
-        joypad_bits.left = true;
-    }
-    if (right) {
-        joypad_bits.right = false;
-    } else if (joypad_bits.right == 0 && !right) {
-        joypad_bits.right = true;
-    }
-*/
 }
+
 #endif
 //-----------------------------------------------------------------------------
 
-struct gb_s gb;
-uint8_t screen[LCD_HEIGHT][LCD_WIDTH];
+
+void draw_text(char *string, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
+    uint8_t len = strlen(string);
+    len = len < 80 ? len : 80;
+    memcpy(&textmode[y][x], string, len);
+    memset(&colors[y][x], (color << 4) | (bgcolor & 0xF), len);
+}
+
 
 #define putstdio(x) write(1, x, strlen(x))
 
-void get_letter(uint8_t *fbuf, char l, uint8_t color, uint8_t bgcolor) {
-    uint8_t letter[8];
-    uint8_t row;
-
-    switch (l) {
-        case 'a':
-        case 'A': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'b':
-        case 'B': {
-            const uint8_t letter_[8] = {0b01111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'c':
-        case 'C': {
-            const uint8_t letter_[8] = {0b00011110,
-                                        0b00110000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b00110000,
-                                        0b00011110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'd':
-        case 'D': {
-            const uint8_t letter_[8] = {0b01111000,
-                                        0b01101100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01101100,
-                                        0b01111000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'e':
-        case 'E': {
-            const uint8_t letter_[8] = {0b01111110,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01111000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'f':
-        case 'F': {
-            const uint8_t letter_[8] = {0b01111110,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01111000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'g':
-        case 'G': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01100000,
-                                        0b01101110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'h':
-        case 'H': {
-            const uint8_t letter_[8] = {0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'i':
-        case 'I': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'j':
-        case 'J': {
-            const uint8_t letter_[8] = {0b00000110,
-                                        0b00000110,
-                                        0b00000110,
-                                        0b00000110,
-                                        0b00000110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'k':
-        case 'K': {
-            const uint8_t letter_[8] = {0b11000110,
-                                        0b11001100,
-                                        0b11011000,
-                                        0b11110000,
-                                        0b11011000,
-                                        0b11001100,
-                                        0b11000110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'l':
-        case 'L': {
-            const uint8_t letter_[8] = {0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'm':
-        case 'M': {
-            const uint8_t letter_[8] = {0b11000110,
-                                        0b11101110,
-                                        0b11111110,
-                                        0b11010110,
-                                        0b11000110,
-                                        0b11000110,
-                                        0b11000110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'n':
-        case 'N': {
-            const uint8_t letter_[8] = {0b11000110,
-                                        0b11100110,
-                                        0b11110110,
-                                        0b11011110,
-                                        0b11001110,
-                                        0b11000110,
-                                        0b11000110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'o':
-        case 'O': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'p':
-        case 'P': {
-            const uint8_t letter_[8] = {0b01111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111100,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b01100000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'q':
-        case 'Q': {
-            const uint8_t letter_[8] = {0b01111000,
-                                        0b11001100,
-                                        0b11001100,
-                                        0b11001100,
-                                        0b11001100,
-                                        0b11011100,
-                                        0b01111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'r':
-        case 'R': {
-            const uint8_t letter_[8] = {0b01111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01111100,
-                                        0b01101100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 's':
-        case 'S': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01110000,
-                                        0b00111100,
-                                        0b00001110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 't':
-        case 'T': {
-            const uint8_t letter_[8] = {0b01111110,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'u':
-        case 'U': {
-            const uint8_t letter_[8] = {0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'v':
-        case 'V': {
-            const uint8_t letter_[8] = {0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00111100,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'w':
-        case 'W': {
-            const uint8_t letter_[8] = {0b11000110,
-                                        0b11000110,
-                                        0b11000110,
-                                        0b11010110,
-                                        0b11111110,
-                                        0b11101110,
-                                        0b11000110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'x':
-        case 'X': {
-            const uint8_t letter_[8] = {0b11000011,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00011000,
-                                        0b00111100,
-                                        0b01100110,
-                                        0b11000011,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'y':
-        case 'Y': {
-            const uint8_t letter_[8] = {0b11000011,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case 'z':
-        case 'Z': {
-            const uint8_t letter_[8] = {0b11111110,
-                                        0b00001100,
-                                        0b00011000,
-                                        0b00110000,
-                                        0b01100000,
-                                        0b11000000,
-                                        0b11111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '-': {
-            const uint8_t letter_[8] = {0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b01111110,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '(':
-        case '[':
-        case '{': {
-            const uint8_t letter_[8] = {0b00001100,
-                                        0b00011000,
-                                        0b00110000,
-                                        0b00110000,
-                                        0b00110000,
-                                        0b00011000,
-                                        0b00001100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case ')':
-        case ']':
-        case '}': {
-            const uint8_t letter_[8] = {0b00110000,
-                                        0b00011000,
-                                        0b00001100,
-                                        0b00001100,
-                                        0b00001100,
-                                        0b00011000,
-                                        0b00110000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case ',': {
-            const uint8_t letter_[8] = {0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00110000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '.': {
-            const uint8_t letter_[8] = {0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '!': {
-            const uint8_t letter_[8] = {0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '&': {
-            const uint8_t letter_[8] = {0b00111000,
-                                        0b01101100,
-                                        0b01101000,
-                                        0b01110110,
-                                        0b11011100,
-                                        0b11001110,
-                                        0b01111011,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '\'': {
-            const uint8_t letter_[8] = {0b00011000,
-                                        0b00011000,
-                                        0b00110000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '0': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01101110,
-                                        0b01111110,
-                                        0b01110110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '1': {
-            const uint8_t letter_[8] = {0b00011000,
-                                        0b00111000,
-                                        0b01111000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '2': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b00000110,
-                                        0b00001100,
-                                        0b00011000,
-                                        0b00110000,
-                                        0b01111110,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '3': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b00000110,
-                                        0b00011100,
-                                        0b00000110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '4': {
-            const uint8_t letter_[8] = {0b00011100,
-                                        0b00111100,
-                                        0b01101100,
-                                        0b11001100,
-                                        0b11111110,
-                                        0b00001100,
-                                        0b00001100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '5': {
-            const uint8_t letter_[8] = {0b01111110,
-                                        0b01100000,
-                                        0b01111100,
-                                        0b00000110,
-                                        0b00000110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '6': {
-            const uint8_t letter_[8] = {0b00011100,
-                                        0b00110000,
-                                        0b01100000,
-                                        0b01111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '7': {
-            const uint8_t letter_[8] = {0b01111110,
-                                        0b00000110,
-                                        0b00000110,
-                                        0b00001100,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00011000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '8': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111100,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        case '9': {
-            const uint8_t letter_[8] = {0b00111100,
-                                        0b01100110,
-                                        0b01100110,
-                                        0b00111110,
-                                        0b00000110,
-                                        0b00001100,
-                                        0b00111000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-
-        default: {
-            const uint8_t letter_[8] = {0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000,
-                                        0b00000000};
-            memcpy(letter, letter_, 8);
-            break;
-        }
-    }
-
-    for (uint8_t y = 0; y < 8; y++) {
-        row = letter[y];
-        for (uint8_t x = 0; x < 8; x++) {
-            if (row & 128) {
-                fbuf[y * 8 + x] = color;
-            } else {
-                fbuf[y * 8 + x] = bgcolor;
-            }
-            row = row << 1;
-        }
-    }
-}
-
-void draw_text(char *s, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
-    uint8_t fbuf[8 * 8];
-
-    for (uint8_t i = 0; i < strlen(s); i++) {
-        get_letter(fbuf, s[i], color, bgcolor);
-
-        for (uint8_t row = 0; row < 8; row++) {
-            memcpy(&screen[row + y][x], &fbuf[row * 8], 8);
-        }
-
-        //	 Грязный хак чтобы записать 8 байт
-        x += 8;
-        if (i >= 19) {
-            break;
-        }
-    }
-}
-
 #if USE_PS2_KBD
-
-void print(hid_keyboard_report_t const *report) {
-    printf("HID key report modifiers %2.2X report ", report->modifier);
-    for (unsigned char i: report->keycode)
-        printf("%2.2X", i);
-    printf("\r\n");
-}
 
 static bool isInReport(hid_keyboard_report_t const *report, const unsigned char keycode) {
     for (unsigned char i: report->keycode) {
-        if (i == keycode)
+        if (i == keycode) {
             return true;
+        }
     }
     return false;
 }
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
-    print(report);
-    //-------------------------------------------------------------------------
-    if (isInReport(report, 0x4A)) {keyboard_bits.home = false;} else {keyboard_bits.home = true;}
-    if (isInReport(report, 0x28)) {keyboard_bits.start = false;} else {keyboard_bits.start = true;}
-    if (isInReport(report, 0x2A)) {keyboard_bits.select = false;} else {keyboard_bits.select = true;}
-    if (isInReport(report, 0x1D)) {keyboard_bits.a = false;} else {keyboard_bits.a = true;}
-    if (isInReport(report, 0x1B)) {keyboard_bits.b = false;} else {keyboard_bits.b = true;}
-    if (isInReport(report, 0x52)) {keyboard_bits.up = false;} else {keyboard_bits.up = true;}
-    if (isInReport(report, 0x51)) {keyboard_bits.down = false;} else {keyboard_bits.down = true;}
-    if (isInReport(report, 0x50)) {keyboard_bits.left = false;} else {keyboard_bits.left = true;}
-    if (isInReport(report, 0x4F)) {keyboard_bits.right = false;} else {keyboard_bits.right = true;}
-    //-------------------------------------------------------------------------
-    /*
-    // HOME button
-    if (isInReport(report, 0x4A)) {
-        joypad_bits.home = false;
-    } else if (joypad_bits.home == 0 && !isInReport(report, 0x4A)) {
-        joypad_bits.home = true;
-    }
-    if (isInReport(report, 0x28)) {
-        joypad_bits.start = false;
-    } else if (joypad_bits.start == 0 && !isInReport(report, 0x28)) {
-        joypad_bits.start = true;
-    }
-    if (isInReport(report, 0x2A)) {
-        joypad_bits.select = false;
-    } else if (joypad_bits.select == 0 && !isInReport(report, 0x2A)) {
-        joypad_bits.select = true;
-    }
+/*    printf("HID key report modifiers %2.2X report ", report->modifier);
+    for (unsigned char i: report->keycode)
+        printf("%2.2X", i);
+    printf("\r\n");*/
 
-    if (isInReport(report, 0x1D)) {
-        joypad_bits.a = false;
-    } else if (joypad_bits.a == 0 && !isInReport(report, 0x1D)) {
-        joypad_bits.a = true;
-    }
-    if (isInReport(report, 0x1B)) {
-        joypad_bits.b = false;
-    } else if (joypad_bits.b == 0 && !isInReport(report, 0x1B)) {
-        joypad_bits.b = true;
-    }
-
-    if (isInReport(report, 0x52)) {
-        joypad_bits.up = false;
-    } else if (joypad_bits.up == 0 && !isInReport(report, 0x52)) {
-        joypad_bits.up = true;
-    }
-    if (isInReport(report, 0x51)) {
-        joypad_bits.down = false;
-    } else if (joypad_bits.down == 0 && !isInReport(report, 0x51)) {
-        joypad_bits.down = true;
-    }
-    if (isInReport(report, 0x50)) {
-        joypad_bits.left = false;
-    } else if (joypad_bits.left == 0 && !isInReport(report, 0x50)) {
-        joypad_bits.left = true;
-    }
-    if (isInReport(report, 0x4F)) {
-        joypad_bits.right = false;
-    } else if (joypad_bits.right == 0 && !isInReport(report, 0x4F)) {
-        joypad_bits.right = true;
-    }
-    */
+    //-------------------------------------------------------------------------
+    if (isInReport(report, 0x28)) { keyboard_bits.start = false; } else { keyboard_bits.start = true; }
+    if (isInReport(report, 0x2A)) { keyboard_bits.select = false; } else { keyboard_bits.select = true; }
+    if (isInReport(report, 0x1D)) { keyboard_bits.a = false; } else { keyboard_bits.a = true; }
+    if (isInReport(report, 0x1B)) { keyboard_bits.b = false; } else { keyboard_bits.b = true; }
+    if (isInReport(report, 0x52)) { keyboard_bits.up = false; } else { keyboard_bits.up = true; }
+    if (isInReport(report, 0x51)) { keyboard_bits.down = false; } else { keyboard_bits.down = true; }
+    if (isInReport(report, 0x50)) { keyboard_bits.left = false; } else { keyboard_bits.left = true; }
+    if (isInReport(report, 0x4F)) { keyboard_bits.right = false; } else { keyboard_bits.right = true; }
+    //-------------------------------------------------------------------------
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
@@ -959,8 +218,7 @@ uint8_t gb_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
 /**
  * Writes a given byte to the cartridge RAM at the given address.
  */
-void gb_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr,
-                       const uint8_t val) {
+void gb_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val) {
     ram[addr] = val;
 }
 
@@ -968,24 +226,22 @@ void gb_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr,
  * Ignore all errors.
  */
 void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr) {
-#if 1
     const char *gb_err_str[4] = {
             "UNKNOWN",
             "INVALID OPCODE",
             "INVALID READ",
-            "INVALID WRITE"};
+            "INVALID WRITE" };
     printf("Error %d occurred: %s at %04X\n.\n", gb_err, gb_err_str[gb_err], addr);
-//	abort();
-#endif
 }
 
 typedef enum {
     RESOLUTION_4X3,
     RESOLUTION_3X3,
     RESOLUTION_2X2,
-    //RESOLUTION_NATIVE,
+    RESOLUTION_TEXTMODE,
+    RESOLUTION_NATIVE,
 } resolution_t;
-resolution_t resolution = RESOLUTION_3X3;
+resolution_t resolution = RESOLUTION_TEXTMODE;
 
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_loop)() {
@@ -1032,13 +288,29 @@ void __time_critical_func(render_loop)() {
                     memset(&linebuf->line, 0, 640);
                 }
                 break;
-            //case RESOLUTION_NATIVE:
-            default:
+            case RESOLUTION_TEXTMODE:
+                for (uint8_t x = 0; x < 80; x++) {
+                    uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
+                    uint8_t color = colors[y / 16][x];
+
+                    for (uint8_t bit = 0; bit < 8; bit++) {
+                        if (CHECK_BIT(glyph_row, bit)) {
+                            // FOREGROUND
+                            linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
+                        } else {
+                            // BACKGROUND
+                            linebuf->line[8 * x + bit] = color & 0xF;
+                        }
+                    }
+                }
+                break;
+            case RESOLUTION_NATIVE:
                 if (y >= 168 && y < 168 + LCD_HEIGHT) {
-                    memcpy(&linebuf->line[240], &screen[y-168][0], LCD_WIDTH);
+                    memcpy(&linebuf->line[240], &screen[y - 168][0], LCD_WIDTH);
                 } else {
                     memset(&linebuf->line, 0, 640);
                 }
+                break;
 
         }
     }
@@ -1052,12 +324,8 @@ void __time_critical_func(render_loop)() {
  * Draws scanline into framebuffer.
  */
 void lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
-
-    // struct priv_t *priv = (priv_t *)(gb->direct.priv);
-
     for (unsigned int x = 0; x < LCD_WIDTH; x++)
         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    // my_palette[pixels[x] & 3];
 }
 
 #endif
@@ -1193,10 +461,12 @@ void load_cart_rom_file(char *filename) {
 /**
  * Function used by the rom file selector to display one page of .gb rom files
  */
-uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_page) {
+uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_page) {
     // Dirty screen cleanup
-    memset(&screen, 0x00, sizeof(screen));
+    memset(&textmode, 0x00, sizeof(textmode));
+    memset(&colors, 0x00, sizeof(colors));
 
+    draw_text("=================== LEFT -> NEXT PAGE / RIGHT <- PREV. PAGE ====================", 0, 29, 3, 16);
     DIR dj;
     FILINFO fno;
     FRESULT fr;
@@ -1208,7 +478,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
     }
 
     /* clear the filenames array */
-    for (uint8_t ifile = 0; ifile < 18; ifile++) {
+    for (uint8_t ifile = 0; ifile < 28; ifile++) {
         strcpy(filename[ifile], "");
     }
 
@@ -1218,7 +488,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 
     /* skip the first N pages */
     if (num_page > 0) {
-        while (num_file < num_page * 18 && fr == FR_OK && fno.fname[0]) {
+        while (num_file < num_page * 28 && fr == FR_OK && fno.fname[0]) {
             num_file++;
             fr = f_findnext(&dj, &fno);
         }
@@ -1226,7 +496,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
 
     /* store the filenames of this page */
     num_file = 0;
-    while (num_file < 18 && fr == FR_OK && fno.fname[0]) {
+    while (num_file < 28 && fr == FR_OK && fno.fname[0]) {
         strcpy(filename[num_file], fno.fname);
         num_file++;
         fr = f_findnext(&dj, &fno);
@@ -1236,7 +506,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
     /* display *.gb rom files on screen */
     // mk_ili9225_fill(0x0000);
     for (uint8_t ifile = 0; ifile < num_file; ifile++) {
-        draw_text(filename[ifile], 0, ifile * 8, 0xFF, 0x00);
+        draw_text(filename[ifile], 0, ifile, 0xFF, 0x00);
     }
     return num_file;
 }
@@ -1248,7 +518,7 @@ uint16_t rom_file_selector_display_page(char filename[22][256], uint16_t num_pag
  */
 void rom_file_selector() {
     uint16_t num_page = 0;
-    char filename[22][256];
+    char filename[30][256];
     uint16_t num_file;
 
     printf("Selecting ROM\r\n");
@@ -1258,11 +528,7 @@ void rom_file_selector() {
 
     /* select the first rom */
     uint8_t selected = 0;
-    draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
-    sleep_ms(3000);
-
-    //			load_cart_rom_file(filename[selected]);
-    // return;
+    draw_text(filename[selected], 0, selected, 0xFF, 0xF8);
 
     while (true) {
 
@@ -1290,22 +556,22 @@ void rom_file_selector() {
         }
         if (!joypad_bits.down) {
             /* select the next rom */
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
+            draw_text(filename[selected], 0, selected, 0xFF, 0x00);
             selected++;
             if (selected >= num_file)
                 selected = 0;
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+            draw_text(filename[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
         if (!joypad_bits.up) {
             /* select the previous rom */
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0x00);
+            draw_text(filename[selected], 0, selected, 0xFF, 0x00);
             if (selected == 0) {
                 selected = num_file - 1;
             } else {
                 selected--;
             }
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+            draw_text(filename[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
         if (!joypad_bits.right) {
@@ -1319,7 +585,7 @@ void rom_file_selector() {
             }
             /* select the first file */
             selected = 0;
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+            draw_text(filename[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
         if ((!joypad_bits.left) && num_page > 0) {
@@ -1328,7 +594,7 @@ void rom_file_selector() {
             num_file = rom_file_selector_display_page(filename, num_page);
             /* select the first file */
             selected = 0;
-            draw_text(filename[selected], 0, selected * 8, 0xFF, 0xF8);
+            draw_text(filename[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
         tight_loop_contents();
@@ -1403,6 +669,7 @@ int main() {
     putstdio("AUDIO ");
 #endif
 
+//while (1) {}
 
     while (true) {
         bool restart = false;
@@ -1410,9 +677,12 @@ int main() {
 #if ENABLE_LCD
 #if ENABLE_SDCARD
         /* ROM File selector */
+        resolution = RESOLUTION_TEXTMODE;
         rom_file_selector();
+        printf(reinterpret_cast<const char *>(textmode));
 #endif
 #endif
+        resolution = RESOLUTION_3X3;
 
         /* Initialise GB context. */
         memcpy(rom_bank0, rom, sizeof(rom_bank0));
@@ -1536,28 +806,13 @@ int main() {
                     printf("I gb.direct.frame_skip = %d\n", gb.direct.frame_skip);
                 }
 
-                if (
-                        (!gb.direct.joypad_bits.a && prev_joypad_bits.a) &&
-                        (!gb.direct.joypad_bits.b && prev_joypad_bits.b) &&
-                        (!gb.direct.joypad_bits.start && prev_joypad_bits.start)
-
-                        ) {
-                    /* HOME button restart */
+                // Restart button
+                if (!gb.direct.joypad_bits.b && prev_joypad_bits.b) {
 #if ENABLE_SDCARD
                     write_cart_ram_file(&gb);
 #endif
                     restart = true;
-                    // goto out;
                 }
-            }
-
-            if (!joypad_bits.home && prev_joypad_bits.home) {
-                /* HOME button restart */
-#if ENABLE_SDCARD
-                write_cart_ram_file(&gb);
-#endif
-                restart = true;
-                // goto out;
             }
 
             /* Serial monitor commands */
@@ -1656,9 +911,6 @@ int main() {
                     break;
             }
         }
-        out:
         puts("\nEmulation Ended");
-        /* stop lcd task running on core 1 */
-        // multicore_reset_core1();
     }
 }
