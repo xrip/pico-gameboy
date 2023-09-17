@@ -466,7 +466,7 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
 
-    draw_text("=================== LEFT -> NEXT PAGE / RIGHT <- PREV. PAGE ====================", 0, 29, 3, 16);
+    draw_text("=================== RIGHT -> NEXT PAGE / LEFT <- PREV. PAGE ====================", 0, 29, 3, 15);
     DIR dj;
     FILINFO fno;
     FRESULT fr;
