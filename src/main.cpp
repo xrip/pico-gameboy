@@ -19,7 +19,7 @@
 #define ENABLE_SOUND 1
 #define ENABLE_SDCARD 1
 #define USE_PS2_KBD 1
-#define USE_NESPAD 0
+#define USE_NESPAD 1
 
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
 
@@ -116,13 +116,25 @@ struct joypad_bits_t {
     bool home: true;
 };
 
-static joypad_bits_t joypad_bits = {true, true, true, true, true, true, true, true, true};
+static joypad_bits_t keyboard_bits = {true, true, true, true, true, true, true, true, true};    //Keyboard
+static joypad_bits_t joypad_bits = {true, true, true, true, true, true, true, true, true};      //Joypad
 static joypad_bits_t prev_joypad_bits = {true, true, true, true, true, true, true, true, true};
-
+//-----------------------------------------------------------------------------
 #if USE_NESPAD
 void nespad_tick() {
     nespad_read();
-
+//-----------------------------------------------------------------------------
+    if (nespad_state & 0x01) {joypad_bits.a = false;} else {joypad_bits.a = true;}
+    if (nespad_state & 0x02) {joypad_bits.b = false;} else {joypad_bits.b = true;}
+    if (nespad_state & 0x04) {joypad_bits.select = false;} else {joypad_bits.select = true;}
+    if (nespad_state & 0x08) {joypad_bits.start = false;} else {joypad_bits.start = true;}
+    if (nespad_state & 0x10) {joypad_bits.up = false;} else {joypad_bits.up = true;}
+    if (nespad_state & 0x20) {joypad_bits.down = false;} else {joypad_bits.down = true;}
+    if (nespad_state & 0x40) {joypad_bits.left = false;} else {joypad_bits.left = true;}
+    if (nespad_state & 0x80) {joypad_bits.right = false;} else {joypad_bits.right = true;}
+    if ((nespad_state & 0x0F)==0x0F) {joypad_bits.home = false;} else {joypad_bits.home = true;} // Home key
+//-----------------------------------------------------------------------------
+/*
     bool right = (nespad_state & 0x80) ? 1 : 0;
     bool left = (nespad_state & 0x40) ? 1 : 0;
     bool down = (nespad_state & 0x20) ? 1 : 0;
@@ -174,8 +186,10 @@ void nespad_tick() {
     } else if (joypad_bits.right == 0 && !right) {
         joypad_bits.right = true;
     }
+*/
 }
 #endif
+//-----------------------------------------------------------------------------
 
 struct gb_s gb;
 uint8_t screen[LCD_HEIGHT][LCD_WIDTH];
@@ -854,6 +868,18 @@ static bool isInReport(hid_keyboard_report_t const *report, const unsigned char 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
     print(report);
+    //-------------------------------------------------------------------------
+    if (isInReport(report, 0x4A)) {keyboard_bits.home = false;} else {keyboard_bits.home = true;}
+    if (isInReport(report, 0x28)) {keyboard_bits.start = false;} else {keyboard_bits.start = true;}
+    if (isInReport(report, 0x2A)) {keyboard_bits.select = false;} else {keyboard_bits.select = true;}
+    if (isInReport(report, 0x1D)) {keyboard_bits.a = false;} else {keyboard_bits.a = true;}
+    if (isInReport(report, 0x1B)) {keyboard_bits.b = false;} else {keyboard_bits.b = true;}
+    if (isInReport(report, 0x52)) {keyboard_bits.up = false;} else {keyboard_bits.up = true;}
+    if (isInReport(report, 0x51)) {keyboard_bits.down = false;} else {keyboard_bits.down = true;}
+    if (isInReport(report, 0x50)) {keyboard_bits.left = false;} else {keyboard_bits.left = true;}
+    if (isInReport(report, 0x4F)) {keyboard_bits.right = false;} else {keyboard_bits.right = true;}
+    //-------------------------------------------------------------------------
+    /*
     // HOME button
     if (isInReport(report, 0x4A)) {
         joypad_bits.home = false;
@@ -902,6 +928,7 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid
     } else if (joypad_bits.right == 0 && !isInReport(report, 0x4F)) {
         joypad_bits.right = true;
     }
+    */
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
@@ -1246,6 +1273,16 @@ void rom_file_selector() {
 #if USE_NESPAD
         nespad_tick();
 #endif
+//-----------------------------------------------------------------------------
+        joypad_bits.up = keyboard_bits.up && joypad_bits.up;
+        joypad_bits.down = keyboard_bits.down && joypad_bits.down;
+        joypad_bits.left = keyboard_bits.left && joypad_bits.left;
+        joypad_bits.right = keyboard_bits.right && joypad_bits.right;
+        joypad_bits.a = keyboard_bits.a && joypad_bits.a;
+        joypad_bits.b = keyboard_bits.b && joypad_bits.b;
+        joypad_bits.select = keyboard_bits.select && joypad_bits.select;
+        joypad_bits.start = keyboard_bits.start && joypad_bits.start;
+//-----------------------------------------------------------------------------
         if (!joypad_bits.start) {
             /* copy the rom from the SD card to flash and start the game */
             load_cart_rom_file(filename[selected]);
@@ -1409,12 +1446,13 @@ int main() {
         uint_fast32_t frames = 0;
         uint64_t start_time = time_us_64();
 
+//=============================================================================
         while (!restart) {
             int input;
 #if USE_PS2_KBD
             ps2kbd.tick();
 #endif
-
+            //-----------------------------------------------------------------
             gb.gb_frame = 0;
 
             do {
@@ -1430,7 +1468,7 @@ int main() {
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
-
+//------------------------------------------------------------------------
             /* Update buttons state */
             prev_joypad_bits.up = gb.direct.joypad_bits.up;
             prev_joypad_bits.down = gb.direct.joypad_bits.down;
@@ -1444,16 +1482,16 @@ int main() {
 #if USE_NESPAD
             nespad_tick();
 #endif
-
-            gb.direct.joypad_bits.up = joypad_bits.up;
-            gb.direct.joypad_bits.down = joypad_bits.down;
-            gb.direct.joypad_bits.left = joypad_bits.left;
-            gb.direct.joypad_bits.right = joypad_bits.right;
-            gb.direct.joypad_bits.a = joypad_bits.a;
-            gb.direct.joypad_bits.b = joypad_bits.b;
-            gb.direct.joypad_bits.select = joypad_bits.select;
-            gb.direct.joypad_bits.start = joypad_bits.start;
-
+//------------------------------------------------------------------------------
+            gb.direct.joypad_bits.up = keyboard_bits.up && joypad_bits.up;
+            gb.direct.joypad_bits.down = keyboard_bits.down && joypad_bits.down;
+            gb.direct.joypad_bits.left = keyboard_bits.left && joypad_bits.left;
+            gb.direct.joypad_bits.right = keyboard_bits.right && joypad_bits.right;
+            gb.direct.joypad_bits.a = keyboard_bits.a && joypad_bits.a;
+            gb.direct.joypad_bits.b = keyboard_bits.b && joypad_bits.b;
+            gb.direct.joypad_bits.select = keyboard_bits.select && joypad_bits.select;
+            gb.direct.joypad_bits.start = keyboard_bits.start && joypad_bits.start;
+//------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
             if (!gb.direct.joypad_bits.select) {
 #if ENABLE_SOUND
