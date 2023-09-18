@@ -13,7 +13,7 @@ add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
 add_subdirectory(drivers/vga)
 add_subdirectory(drivers/nespad)
-add_subdirectory(drivers/i2s)
+add_subdirectory(drivers/audio)
 
 add_executable(gameboy
         src/main.cpp
@@ -23,7 +23,7 @@ add_executable(gameboy
 target_include_directories(gameboy PRIVATE inc ext/minigb_apu)
 
 target_link_libraries(gameboy
-        i2s
+        audio
 
         vga
         ps2kbd
@@ -74,6 +74,9 @@ target_compile_definitions(gameboy PRIVATE
         NES_GPIO_CLK=14
         NES_GPIO_LAT=15
         NES_GPIO_DATA=16
+
+        # AUDIO
+        AUDIO_PWM_PIN=26
 
         # Other
         FF_USE_FIND

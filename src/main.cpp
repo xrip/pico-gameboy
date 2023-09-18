@@ -39,7 +39,7 @@
 
 #if ENABLE_SOUND
 
-#include "i2s.h"
+#include "audio.h"
 #include "minigb_apu.h"
 
 #endif

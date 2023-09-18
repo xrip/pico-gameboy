@@ -22,13 +22,12 @@
  * IN THE SOFTWARE.
  */
 
-#define PWM_PIN (26)
-#define PWM_PIN0 (PWM_PIN&0xfe)
+#define PWM_PIN0 (AUDIO_PWM_PIN&0xfe)
 #define PWM_PIN1 (PWM_PIN0+1)
 
-#include "i2s.h"
+#include "audio.h"
 
-#ifdef PWM_PIN
+#ifdef AUDIO_PWM_PIN
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 #endif
@@ -62,7 +61,7 @@ i2s_config_t i2s_get_default_config(void) {
 void i2s_init(i2s_config_t *i2s_config) {
 
 
-#ifndef PWM_PIN   
+#ifndef AUDIO_PWM_PIN
 
     uint8_t func=GPIO_FUNC_PIO1;    // TODO: GPIO_FUNC_PIO0 for pio0 or GPIO_FUNC_PIO1 for pio1
     gpio_set_function(i2s_config->data_pin, func);
@@ -95,7 +94,7 @@ void i2s_init(i2s_config_t *i2s_config) {
     channel_config_set_transfer_data_size(&dma_config, DMA_SIZE_32);
 
     uint32_t* addr_write_DMA=&(i2s_config->pio->txf[i2s_config->sm]);
-#ifdef PWM_PIN
+#ifdef AUDIO_PWM_PIN
     gpio_set_function(PWM_PIN0, GPIO_FUNC_PWM);
     gpio_set_function(PWM_PIN1, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(PWM_PIN0);
@@ -154,7 +153,7 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
     dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);
     /* Copy samples into the DMA buffer */
 
-#ifdef PWM_PIN
+#ifdef AUDIO_PWM_PIN
     for(uint16_t i=0;i<i2s_config->dma_trans_count*2;i++) {
            
             i2s_config->dma_buf[i] = (65536/2+(samples[i]))>>(5+i2s_config->volume);
