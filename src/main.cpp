@@ -101,14 +101,10 @@ uint16_t *stream;
 #define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
 
 // Function to convert RGB565 to RGB222
-uint8_t convertRGB565toRGB222(uint16_t color565) {
-    // Extract the red, green, and blue components from the RGB55 color
-    uint8_t red = (color565 >> 11) & 0x1F;
-    uint8_t green = (color565 >> 5) & 0x3F;
-    uint8_t blue = color565 & 0x1F;
-
-    return VGA_RGB_222(((red * 255) / 31) >> 6, ((green * 255) / 63) >> 6, ((blue * 255) / 31) >> 6);
-}
+#define convertRGB565toRGB222(color565) \
+    (((((color565 >> 11) & 0x1F) * 255 / 31) >> 6) << 4 | \
+    ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
+    ((color565 & 0x1F) * 255 / 31) >> 6)
 
 typedef uint8_t palette222_t[3][4];
 static palette222_t palette;
@@ -171,8 +167,7 @@ static bool isInReport(hid_keyboard_report_t const *report, const unsigned char 
     return false;
 }
 
-void
-__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
+void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
 /*    printf("HID key report modifiers %2.2X report ", report->modifier);
     for (unsigned char i: report->keycode)
         printf("%2.2X", i);
@@ -682,7 +677,6 @@ int main() {
         /* ROM File selector */
         resolution = RESOLUTION_TEXTMODE;
         rom_file_selector();
-        printf(reinterpret_cast<const char *>(textmode));
 #endif
 #endif
         resolution = RESOLUTION_3X3;

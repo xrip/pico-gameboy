@@ -90,6 +90,9 @@ function(pico_add_verbose_dis_output TARGET)
     )
 endfunction()
 
+pico_set_program_name(gameboy "GameBoy for MURMULATOR devboard")
+pico_set_program_version(gameboy "v0.1")
+
 #pico_set_binary_type(gameboy copy_to_ram)
 #pico_set_binary_type(gameboy no_flash)
 pico_enable_stdio_usb(gameboy 1)
