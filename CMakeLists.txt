@@ -31,7 +31,7 @@ target_link_libraries(gameboy
         fatfs
         nespad
 
-
+        pico_divider
         pico_mem_ops
         pico_stdlib
         pico_stdio
