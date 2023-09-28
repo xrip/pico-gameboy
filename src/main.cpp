@@ -13,7 +13,7 @@
  * OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
  * PERFORMANCE OF THIS SOFTWARE.
  */
-
+#pragma GCC optimize("Ofast")
 // Peanut-GB emulator settings
 #define ENABLE_LCD 1
 #define ENABLE_SOUND 1
@@ -246,15 +246,18 @@ void __time_critical_func(render_loop)() {
 
     sem_acquire_blocking(&vga_start_semaphore);
     VgaInit(vmode, 640, 480);
-
+    uint8_t pixel;
+    uint8_t color;
+    uint32_t y;
     while (linebuf = get_vga_line()) {
-        uint32_t y = linebuf->row;
+        y = linebuf->row;
 
         switch (resolution) {
             case RESOLUTION_4X3:
                 if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
-                        (uint32_t &) linebuf->line[x] = X4(screen[(y - 24) / 3][x / 4]);
+                        pixel = screen[(y - 24) / 3][x / 4];
+                        (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
                     memset(&linebuf->line, 0, 640);
@@ -263,8 +266,9 @@ void __time_critical_func(render_loop)() {
             case RESOLUTION_3X3:
                 if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH; x++) {
-                        uint16_t x3 = 80 + (x * 3);
-                        uint8_t color = screen[(y - 24) / 3][x];
+                        uint16_t x3 = 80 + (x <<  1) + x;
+                        pixel = screen[(y - 24) / 3][x];
+                        color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
                         linebuf->line[x3] = color;
                         linebuf->line[x3 + 1] = color;
                         linebuf->line[x3 + 2] = color;
@@ -277,7 +281,8 @@ void __time_critical_func(render_loop)() {
                 //if (y >= 48 && y < 48 + LCD_HEIGHT) {
                 if (y >= 96 && y < (96 + LCD_HEIGHT * 2)) {
                     for (int x = 0; x < LCD_WIDTH * 2; x += 2) {
-                        (uint16_t &) linebuf->line[160 + x] = X2(screen[(y - 96) / 2][x / 2]);
+                         pixel = screen[(y - 96) / 2][x / 2];
+                        (uint16_t &) linebuf->line[160 + x] = X2(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
                     memset(&linebuf->line, 0, 640);
@@ -286,7 +291,7 @@ void __time_critical_func(render_loop)() {
             case RESOLUTION_TEXTMODE:
                 for (uint8_t x = 0; x < 80; x++) {
                     uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
-                    uint8_t color = colors[y / 16][x];
+                    color = colors[y / 16][x];
 
                     for (uint8_t bit = 0; bit < 8; bit++) {
                         if (CHECK_BIT(glyph_row, bit)) {
@@ -319,8 +324,10 @@ void __time_critical_func(render_loop)() {
  * Draws scanline into framebuffer.
  */
 void lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    for (unsigned int x = 0; x < LCD_WIDTH; x++)
-        screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    memcpy((uint32_t *)screen[y], (uint32_t *)pixels, 160);
+//         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+        //for (unsigned int x = 0; x < LCD_WIDTH; x++)
+//        screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
 }
 
 #endif
@@ -605,15 +612,8 @@ int main() {
     enum gb_init_error_e ret;
 
     /* Overclock. */
-    {
-        const unsigned vco = 1596 * 1000 * 1000; /* 266MHz */
-        const unsigned div1 = 6, div2 = 1;
-
-        vreg_set_voltage(VREG_VOLTAGE_1_15);
-        sleep_ms(2);
-        set_sys_clock_pll(vco, div1, div2);
-        sleep_ms(2);
-    }
+    vreg_set_voltage(VREG_VOLTAGE_1_15);
+    set_sys_clock_khz(288000, true);
 
     /* Initialise USB serial connection for debugging. */
     stdio_init_all();
