@@ -32,7 +32,7 @@ target_link_libraries(gameboy
         nespad
 
 
-
+        pico_mem_ops
         pico_stdlib
         pico_stdio
         pico_bootrom

@@ -28,6 +28,7 @@
 #include <cstring>
 
 /* RP2040 Headers */
+#include "pico/mem_ops.h"
 #include <hardware/sync.h>
 #include <hardware/flash.h>
 #include <hardware/timer.h>
