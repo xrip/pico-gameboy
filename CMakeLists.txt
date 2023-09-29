@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.13...3.23)
 
 include(pico_sdk_import.cmake)
 
+set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
+
 project(gameboy C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -31,8 +36,7 @@ target_link_libraries(gameboy
         fatfs
         nespad
 
-        pico_divider
-        pico_mem_ops
+        pico_runtime
         pico_stdlib
         pico_stdio
         pico_bootrom
