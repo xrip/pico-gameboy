@@ -255,17 +255,17 @@ void __time_critical_func(render_loop)() {
 
         switch (resolution) {
             case RESOLUTION_4X3:
-                if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
+                if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
                         pixel = screen[(y - 24) / 3][x / 4];
                         (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
-                    memset(&linebuf->line, 0, 640);
+                    memset(linebuf->line, 0, 640);
                 }
                 break;
             case RESOLUTION_3X3:
-                if (y > 24 && y < (24 + LCD_HEIGHT * 3)) {
+                if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH; x++) {
                         uint16_t x3 = 80 + (x <<  1) + x;
                         pixel = screen[(y - 24) / 3][x];
@@ -275,7 +275,7 @@ void __time_critical_func(render_loop)() {
                         linebuf->line[x3 + 2] = color;
                     }
                 } else {
-                    memset(&linebuf->line, 0, 640);
+                    memset(linebuf->line, 0, 640);
                 }
                 break;
             case RESOLUTION_2X2:
@@ -286,7 +286,7 @@ void __time_critical_func(render_loop)() {
                         (uint16_t &) linebuf->line[160 + x] = X2(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
-                    memset(&linebuf->line, 0, 640);
+                    memset(linebuf->line, 0, 640);
                 }
                 break;
             case RESOLUTION_TEXTMODE:
@@ -309,7 +309,7 @@ void __time_critical_func(render_loop)() {
                 if (y >= 168 && y < 168 + LCD_HEIGHT) {
                     memcpy(&linebuf->line[240], &screen[y - 168][0], LCD_WIDTH);
                 } else {
-                    memset(&linebuf->line, 0, 640);
+                    memset(linebuf->line, 0, 640);
                 }
                 break;
 
@@ -553,7 +553,7 @@ void rom_file_selector() {
         joypad_bits.select = keyboard_bits.select && joypad_bits.select;
         joypad_bits.start = keyboard_bits.start && joypad_bits.start;
 //-----------------------------------------------------------------------------
-        if (!joypad_bits.start) {
+        if (!joypad_bits.start || !joypad_bits.a || !joypad_bits.b) {
             /* copy the rom from the SD card to flash and start the game */
             char pathname[255];
             sprintf(pathname, "GB\\%s", filenames[selected]);
