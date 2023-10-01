@@ -76,7 +76,8 @@
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
 #define FLASH_TARGET_OFFSET (1024 * 1024)
-const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET);
+const char *rom_filename = (const char*) (XIP_BASE + FLASH_TARGET_OFFSET);
+const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET)+4096;
 static unsigned char rom_bank0[65535];
 
 static uint8_t ram[32768];
@@ -86,7 +87,7 @@ struct semaphore vga_start_semaphore;
 
 struct gb_s gb;
 
-uint8_t screen[LCD_HEIGHT][LCD_WIDTH];
+uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
 char textmode[30][80];
 uint8_t colors[30][80];
 
@@ -257,7 +258,7 @@ void __time_critical_func(render_loop)() {
             case RESOLUTION_4X3:
                 if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
-                        pixel = screen[(y - 24) / 3][x / 4];
+                        pixel = SCREEN[(y - 24) / 3][x / 4];
                         (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
@@ -268,7 +269,7 @@ void __time_critical_func(render_loop)() {
                 if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
                     for (int x = 0; x < LCD_WIDTH; x++) {
                         uint16_t x3 = 80 + (x <<  1) + x;
-                        pixel = screen[(y - 24) / 3][x];
+                        pixel = SCREEN[(y - 24) / 3][x];
                         color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
                         linebuf->line[x3] = color;
                         linebuf->line[x3 + 1] = color;
@@ -282,7 +283,7 @@ void __time_critical_func(render_loop)() {
                 //if (y >= 48 && y < 48 + LCD_HEIGHT) {
                 if (y >= 96 && y < (96 + LCD_HEIGHT * 2)) {
                     for (int x = 0; x < LCD_WIDTH * 2; x += 2) {
-                         pixel = screen[(y - 96) / 2][x / 2];
+                         pixel = SCREEN[(y - 96) / 2][x / 2];
                         (uint16_t &) linebuf->line[160 + x] = X2(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
@@ -307,7 +308,7 @@ void __time_critical_func(render_loop)() {
                 break;
             case RESOLUTION_NATIVE:
                 if (y >= 168 && y < 168 + LCD_HEIGHT) {
-                    memcpy(&linebuf->line[240], &screen[y - 168][0], LCD_WIDTH);
+                    memcpy(&linebuf->line[240], &SCREEN[y - 168][0], LCD_WIDTH);
                 } else {
                     memset(linebuf->line, 0, 640);
                 }
@@ -325,7 +326,7 @@ void __time_critical_func(render_loop)() {
  * Draws scanline into framebuffer.
  */
 void lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    memcpy((uint32_t *)screen[y], (uint32_t *)pixels, 160);
+    memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
 //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
         //for (unsigned int x = 0; x < LCD_WIDTH; x++)
 //        screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
@@ -403,62 +404,59 @@ void write_cart_ram_file(struct gb_s *gb) {
     printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
-/**
- * Load a .gb rom file in flash from the SD card
- */
 void load_cart_rom_file(char *filename) {
-    UINT br = 0;
-    uint8_t buffer[FLASH_SECTOR_SIZE];
-    bool mismatch = false;
-
-    FRESULT fr = f_mount(&fs, "", 1);
-    if (FR_OK != fr) {
-        printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
+    if (strcmp(rom_filename, filename) == 0) {
+        printf("Launching last rom");
         return;
     }
+
     FIL fil;
+    FRESULT fr;
+
+    size_t bufsize = sizeof(SCREEN);
+    BYTE *buffer = (BYTE *) SCREEN;
+    auto ofs = FLASH_TARGET_OFFSET;
+    printf("Writing %s rom to flash %x\r\n", filename, ofs);
     fr = f_open(&fil, filename, FA_READ);
+
+    UINT bytesRead;
     if (fr == FR_OK) {
-        multicore_lockout_start_blocking();
         uint32_t ints = save_and_disable_interrupts();
-        uint32_t flash_target_offset = FLASH_TARGET_OFFSET;
+        multicore_lockout_start_blocking();
+
+        // TODO: Save it after success loading to prevent corruptions
+        printf("Flashing %d bytes to flash address %x\r\n", 256, ofs);
+        flash_range_erase(ofs, 4096);
+        flash_range_program(ofs, reinterpret_cast<const uint8_t *>(filename), 256);
+
+        ofs += 4096;
         for (;;) {
-            f_read(&fil, buffer, sizeof buffer, &br);
-            if (br == 0)
-                break; /* end of file */
-
-            printf("I Erasing target region...\n");
-            flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-            printf("I Programming target region...\n");
-            flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
-            /* Read back target region and check programming */
-            printf("I Done. Reading back target region...\n");
-            for (uint32_t i = 0; i < FLASH_SECTOR_SIZE; i++) {
-                if (rom[flash_target_offset + i] != buffer[i]) {
-                    mismatch = true;
+            fr = f_read(&fil, buffer, bufsize, &bytesRead);
+            if (fr == FR_OK) {
+                if (bytesRead == 0) {
+                    break;
                 }
-            }
 
-            /* Next sector */
-            flash_target_offset += FLASH_SECTOR_SIZE;
+                printf("Flashing %d bytes to flash address %x\r\n", bytesRead, ofs);
+
+                printf("Erasing...");
+                // Disable interupts, erase, flash and enable interrupts
+                flash_range_erase(ofs, bufsize);
+                printf("  -> Flashing...\r\n");
+                flash_range_program(ofs, buffer, bufsize);
+
+                ofs += bufsize;
+            } else {
+                printf("Error reading rom: %d\n", fr);
+                break;
+            }
         }
+
+
+        f_close(&fil);
         restore_interrupts(ints);
         multicore_lockout_end_blocking();
-        if (mismatch) {
-            printf("I Programming successful!\n");
-        } else {
-            printf("E Programming failed!\n");
-        }
-    } else {
-        printf("E f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
     }
-
-    fr = f_close(&fil);
-    if (fr != FR_OK) {
-        printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
-    }
-
-    printf("I load_cart_rom_file(%s) COMPLETE (%u bytes)\n", filename, br);
 }
 
 /**
