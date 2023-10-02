@@ -413,8 +413,8 @@ void load_cart_rom_file(char *filename) {
     FIL fil;
     FRESULT fr;
 
-    size_t bufsize = sizeof(SCREEN);
-    BYTE *buffer = (BYTE *) SCREEN;
+    size_t bufsize = sizeof(ram);
+    BYTE *buffer = (BYTE *) ram;
     auto ofs = FLASH_TARGET_OFFSET;
     printf("Writing %s rom to flash %x\r\n", filename, ofs);
     fr = f_open(&fil, filename, FA_READ);
@@ -615,7 +615,7 @@ int main() {
     set_sys_clock_khz(288000, true);
 
     /* Initialise USB serial connection for debugging. */
-    stdio_init_all();
+    //stdio_init_all();
     // time_init();
     //sleep_ms(5000);
 
