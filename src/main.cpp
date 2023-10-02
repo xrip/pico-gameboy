@@ -20,7 +20,7 @@
 #define ENABLE_SDCARD 1
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
-
+#define SHOW_FPS 1
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
 
 /* C Headers */
@@ -232,9 +232,7 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
 typedef enum {
     RESOLUTION_4X3,
     RESOLUTION_3X3,
-    RESOLUTION_2X2,
     RESOLUTION_TEXTMODE,
-    RESOLUTION_NATIVE,
 } resolution_t;
 resolution_t resolution = RESOLUTION_TEXTMODE;
 
@@ -254,9 +252,9 @@ void __time_critical_func(render_loop)() {
 
         switch (resolution) {
             case RESOLUTION_4X3:
-                if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
+                if (y >= 8 && y < (8 + LCD_HEIGHT)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
-                        pixel = SCREEN[(y - 24) / 3][x / 4];
+                        pixel = SCREEN[(y - 8)][x / 4];
                         (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
                     }
                 } else {
@@ -264,10 +262,10 @@ void __time_critical_func(render_loop)() {
                 }
                 break;
             case RESOLUTION_3X3:
-                if (y >= 24 && y < (24 + LCD_HEIGHT * 3)) {
+                if (y >= 8 && y < (8 + LCD_HEIGHT)) {
                     for (int x = 0; x < LCD_WIDTH; x++) {
                         uint16_t x3 = 80 + (x <<  1) + x;
-                        pixel = SCREEN[(y - 24) / 3][x];
+                        pixel = SCREEN[y - 8][x];
                         color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
                         linebuf->line[x3] = color;
                         linebuf->line[x3 + 1] = color;
@@ -287,23 +285,16 @@ void __time_critical_func(render_loop)() {
                             if (CHECK_BIT(glyph_row, bit)) {
                                 // FOREGROUND
                                 linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
+                            } else {
+                                // BACKGROUND
+                                linebuf->line[8 * x + bit] = color & 0xF;
                             }
                         }
                     }
                 }
 #endif
                 break;
-            case RESOLUTION_2X2:
-                //if (y >= 48 && y < 48 + LCD_HEIGHT) {
-                if (y >= 96 && y < (96 + LCD_HEIGHT * 2)) {
-                    for (int x = 0; x < LCD_WIDTH * 2; x += 2) {
-                         pixel = SCREEN[(y - 96) / 2][x / 2];
-                        (uint16_t &) linebuf->line[160 + x] = X2(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
-                    }
-                } else {
-                    memset(linebuf->line, 0, 640);
-                }
-                break;
+
             case RESOLUTION_TEXTMODE:
                 for (uint8_t x = 0; x < 80; x++) {
                     uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
@@ -320,14 +311,6 @@ void __time_critical_func(render_loop)() {
                     }
                 }
                 break;
-            case RESOLUTION_NATIVE:
-                if (y >= 168 && y < 168 + LCD_HEIGHT) {
-                    memcpy(&linebuf->line[240], &SCREEN[y - 168][0], LCD_WIDTH);
-                } else {
-                    memset(linebuf->line, 0, 640);
-                }
-                break;
-
         }
     }
 
@@ -484,7 +467,7 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
     memset(&colors, 0x00, sizeof(colors));
     char footer[80];
     sprintf(footer, "=================== PAGE #%i -> NEXT PAGE / <- PREV. PAGE ====================", num_page);
-    draw_text(footer, 0, 29, 3, 11);
+    draw_text(footer, 0, 9, 3, 11);
 
     DIR dj;
     FILINFO fno;
@@ -497,7 +480,7 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
     }
 
     /* clear the filenames array */
-    for (uint8_t ifile = 0; ifile < 28; ifile++) {
+    for (uint8_t ifile = 0; ifile < 8; ifile++) {
         strcpy(filename[ifile], "");
     }
 
@@ -507,7 +490,7 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
 
     /* skip the first N pages */
     if (num_page > 0) {
-        while (num_file < num_page * 28 && fr == FR_OK && fno.fname[0]) {
+        while (num_file < num_page * 8 && fr == FR_OK && fno.fname[0]) {
             num_file++;
             fr = f_findnext(&dj, &fno);
         }
@@ -515,7 +498,7 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
 
     /* store the filenames of this page */
     num_file = 0;
-    while (num_file < 28 && fr == FR_OK && fno.fname[0]) {
+    while (num_file < 8 && fr == FR_OK && fno.fname[0]) {
         strcpy(filename[num_file], fno.fname);
         num_file++;
         fr = f_findnext(&dj, &fno);
@@ -643,7 +626,7 @@ int main() {
 
     printf("VGA ");
     sleep_ms(50);
-    vmode = Video(DEV_VGA, RES_VGA);   //R
+    vmode = Video(DEV_VGA, RES_HVGA);   //R
     sleep_ms(50);
 
 #if USE_PS2_KBD
@@ -803,10 +786,10 @@ if (frames == 60) {
                 }
 #endif
                 if (!gb.direct.joypad_bits.up) {
-                    resolution = static_cast<resolution_t>((resolution + 1) % 3);
+                    resolution = static_cast<resolution_t>((resolution + 1) % 2);
                 }
                 if (!gb.direct.joypad_bits.down) {
-                    resolution = static_cast<resolution_t>((resolution - 1) % 3);
+                    resolution = static_cast<resolution_t>((resolution - 1) % 2);
                 }
                 if (!gb.direct.joypad_bits.right) {
                     /* select + right: select the next manual color palette */

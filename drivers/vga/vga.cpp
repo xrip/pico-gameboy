@@ -142,10 +142,10 @@ extern "C" void __not_in_flash_func(VgaLine)()
 	case LINE_IMG:		// progressive image 0, 1, 2,...
 		int y = line - CurVmode.vfirst;
 		if (CurVmode.dbly) {
-	  if ((y & 1) == 0) { 
+	  if ((y % 3) == 0) {
 				LineInx ^= 1;
 			  	dbuf = VgaLineBufs[LineInx];
-				dbuf->row = y >> 1;
+				dbuf->row = y / 3;
 				dbuf->frame = Frame;
 				queue_add_blocking_u32(&q_vga_valid, &dbuf);
 			}

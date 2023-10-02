@@ -88,7 +88,8 @@ const sVideo* VideoResTab[DEV_MAX*RES_MAX] =
 	&VideoVGA,	// RES_QVGA,	// 320x240
 	&VideoEGA,	// RES_EGA,	// 528x400
 	&VideoVGA,	// RES_VGA,	// 640x480
-	&VideoVGA,	// RES_VGA,	// 640x480
+	&VideoVGA,	// RES_HVGA,	// 640x240
+	&VideoVGA,	// RES_HHVGA,	// 640x160
 };
 
 // required resolution width x height
@@ -100,6 +101,7 @@ const u16 VideoResReq[RES_MAX*2] =
 	512, 400,	// RES_EGA,	// 512x400
 	640, 480, 	// RES_VGA,	// 640x480
 	640, 240, 	// RES_HVGA,	// 640x240
+	640, 160, 	// RES_HHVGA,	// 640x160
 };
 
 
@@ -331,14 +333,14 @@ void VgaCfg(const sVgaCfg* cfg, sVmode* vmode)
 
 	// vertical timings
 	int h = cfg->height; // required height
-	if (cfg->dbly) h *= 2; // use double lines
+	if (cfg->dbly) h *= 3; // use double lines
 	vmode->vmax = v->vmax; // maximal height
 	if (h > v->vmax) h = v->vmax; // limit height
 	if (cfg->dbly) h &= ~1; // must be even number if double lines
 
 	int vact = h;	// active lines in progress mode
 
-	if (cfg->dbly) h /= 2; // return double lines to single lines
+	if (cfg->dbly) h /= 3; // return double lines to single lines
 	vmode->height = h;
 
 	// vertical timings
@@ -387,7 +389,7 @@ const sVmode* Video(u8 dev, u8 res)
 	Cfg.video = v; // video timings
 	Cfg.width = w; // screen width
 	Cfg.height = h; // screen height
-	Cfg.dbly = h <= v->vmax/2; // double scanlines ( true || )
+	Cfg.dbly = true || h <= v->vmax/3; // double scanlines ( true || )
 	VgaCfg(&Cfg, &Vmode); // calculate videomode setup
 
 	// initialize system clock
