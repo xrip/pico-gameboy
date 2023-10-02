@@ -471,11 +471,11 @@ uint16_t rom_file_selector_display_page(char filenames[28][256], uint16_t page_n
 
     DIR directory;
     FILINFO file;
-    FRESULT fr;
+    FRESULT result;
 
-    fr = f_mount(&fs, "", 1);
-    if (FR_OK != fr) {
-        printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
+    result = f_mount(&fs, "", 1);
+    if (FR_OK != result) {
+        printf("E f_mount error: %s (%d)\n", FRESULT_str(result), result);
         return 0;
     }
 
@@ -486,22 +486,22 @@ uint16_t rom_file_selector_display_page(char filenames[28][256], uint16_t page_n
 
     /* search *.gb files */
     uint16_t total_files = 0;
-    fr = f_findfirst(&directory, &file, "GB\\", "*.gb");
+    result = f_findfirst(&directory, &file, "GB\\", "*.gb");
 
     /* skip the first N pages */
     if (page_number > 0) {
-        while (total_files < page_number * 8 && fr == FR_OK && file.fname[0]) {
+        while (total_files < page_number * 8 && result == FR_OK && file.fname[0]) {
             total_files++;
-            fr = f_findnext(&directory, &file);
+            result = f_findnext(&directory, &file);
         }
     }
 
     /* store the filenames of this page */
     total_files = 0;
-    while (total_files < 8 && fr == FR_OK && file.fname[0]) {
+    while (total_files < 8 && result == FR_OK && file.fname[0]) {
         strcpy(filenames[total_files], file.fname);
         total_files++;
-        fr = f_findnext(&directory, &file);
+        result = f_findnext(&directory, &file);
     }
     f_closedir(&directory);
 
