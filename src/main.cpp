@@ -541,6 +541,10 @@ void rom_file_selector() {
 #if USE_NESPAD
         nespad_tick();
 #endif
+        sleep_ms(33);
+#if USE_NESPAD
+        nespad_tick();
+#endif
 //-----------------------------------------------------------------------------
         joypad_bits.up = keyboard_bits.up && joypad_bits.up;
         joypad_bits.down = keyboard_bits.down && joypad_bits.down;
