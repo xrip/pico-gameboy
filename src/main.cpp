@@ -114,7 +114,7 @@ static palette222_t palette;
 static palette_t palette16; // Colour palette
 static uint8_t manual_palette_selected = 0;
 
-struct joypad_bits_t {
+struct input_bits_t {
     bool a: true;
     bool b: true;
     bool select: true;
@@ -125,23 +125,22 @@ struct joypad_bits_t {
     bool down: true;
 };
 
-static joypad_bits_t keyboard_bits = { true, true, true, true, true, true, true, true };    //Keyboard
-static joypad_bits_t joypad_bits = { true, true, true, true, true, true, true, true };      //Joypad
-static joypad_bits_t prev_joypad_bits = { true, true, true, true, true, true, true, true };
+static input_bits_t keyboard_bits = { true, true, true, true, true, true, true, true };    //Keyboard
+static input_bits_t gamepad_bits = { true, true, true, true, true, true, true, true };      //Joypad
 //-----------------------------------------------------------------------------
 #if USE_NESPAD
 
 void nespad_tick() {
     nespad_read();
-//-----------------------------------------------------------------------------
-    if (nespad_state & 0x01) { joypad_bits.a = false; } else { joypad_bits.a = true; }
-    if (nespad_state & 0x02) { joypad_bits.b = false; } else { joypad_bits.b = true; }
-    if (nespad_state & 0x04) { joypad_bits.select = false; } else { joypad_bits.select = true; }
-    if (nespad_state & 0x08) { joypad_bits.start = false; } else { joypad_bits.start = true; }
-    if (nespad_state & 0x10) { joypad_bits.up = false; } else { joypad_bits.up = true; }
-    if (nespad_state & 0x20) { joypad_bits.down = false; } else { joypad_bits.down = true; }
-    if (nespad_state & 0x40) { joypad_bits.left = false; } else { joypad_bits.left = true; }
-    if (nespad_state & 0x80) { joypad_bits.right = false; } else { joypad_bits.right = true; }
+
+    gamepad_bits.a = !(nespad_state & DPAD_A);
+    gamepad_bits.b = !(nespad_state & DPAD_B);
+    gamepad_bits.select = !(nespad_state & DPAD_SELECT);
+    gamepad_bits.start = !(nespad_state & DPAD_START);
+    gamepad_bits.up = !(nespad_state & DPAD_UP);
+    gamepad_bits.down = !(nespad_state & DPAD_DOWN);
+    gamepad_bits.left = !(nespad_state & DPAD_LEFT);
+    gamepad_bits.right = !(nespad_state & DPAD_RIGHT);
 //-----------------------------------------------------------------------------
 }
 
@@ -176,16 +175,14 @@ void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report
         printf("%2.2X", i);
     printf("\r\n");*/
 
-    //-------------------------------------------------------------------------
-    if (isInReport(report, 0x28)) { keyboard_bits.start = false; } else { keyboard_bits.start = true; }
-    if (isInReport(report, 0x2A)) { keyboard_bits.select = false; } else { keyboard_bits.select = true; }
-    if (isInReport(report, 0x1D)) { keyboard_bits.a = false; } else { keyboard_bits.a = true; }
-    if (isInReport(report, 0x1B)) { keyboard_bits.b = false; } else { keyboard_bits.b = true; }
-    if (isInReport(report, 0x52)) { keyboard_bits.up = false; } else { keyboard_bits.up = true; }
-    if (isInReport(report, 0x51)) { keyboard_bits.down = false; } else { keyboard_bits.down = true; }
-    if (isInReport(report, 0x50)) { keyboard_bits.left = false; } else { keyboard_bits.left = true; }
-    if (isInReport(report, 0x4F)) { keyboard_bits.right = false; } else { keyboard_bits.right = true; }
-    //-------------------------------------------------------------------------
+    keyboard_bits.start = !isInReport(report, HID_KEY_ENTER);
+    keyboard_bits.select = !isInReport(report, HID_KEY_BACKSPACE);
+    keyboard_bits.a = !isInReport(report, HID_KEY_Z);
+    keyboard_bits.b = !isInReport(report, HID_KEY_X);
+    keyboard_bits.up = !isInReport(report, HID_KEY_ARROW_UP);
+    keyboard_bits.down = !isInReport(report, HID_KEY_ARROW_DOWN);
+    keyboard_bits.left = !isInReport(report, HID_KEY_ARROW_LEFT);
+    keyboard_bits.right = !isInReport(report, HID_KEY_ARROW_RIGHT);
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
@@ -448,6 +445,7 @@ void load_cart_rom_file(char *filename) {
 
         ofs += 4096;
         for (;;) {
+            gpio_put(PICO_DEFAULT_LED_PIN, true);
             fr = f_read(&fil, buffer, bufsize, &bytesRead);
             if (fr == FR_OK) {
                 if (bytesRead == 0) {
@@ -457,6 +455,7 @@ void load_cart_rom_file(char *filename) {
                 printf("Flashing %d bytes to flash address %x\r\n", bytesRead, ofs);
 
                 printf("Erasing...");
+                gpio_put(PICO_DEFAULT_LED_PIN, false);
                 // Disable interupts, erase, flash and enable interrupts
                 flash_range_erase(ofs, bufsize);
                 printf("  -> Flashing...\r\n");
@@ -563,23 +562,23 @@ void rom_file_selector() {
         nespad_tick();
 #endif
 //-----------------------------------------------------------------------------
-        joypad_bits.up = keyboard_bits.up && joypad_bits.up;
-        joypad_bits.down = keyboard_bits.down && joypad_bits.down;
-        joypad_bits.left = keyboard_bits.left && joypad_bits.left;
-        joypad_bits.right = keyboard_bits.right && joypad_bits.right;
-        joypad_bits.a = keyboard_bits.a && joypad_bits.a;
-        joypad_bits.b = keyboard_bits.b && joypad_bits.b;
-        joypad_bits.select = keyboard_bits.select && joypad_bits.select;
-        joypad_bits.start = keyboard_bits.start && joypad_bits.start;
+        gamepad_bits.up = keyboard_bits.up && gamepad_bits.up;
+        gamepad_bits.down = keyboard_bits.down && gamepad_bits.down;
+        gamepad_bits.left = keyboard_bits.left && gamepad_bits.left;
+        gamepad_bits.right = keyboard_bits.right && gamepad_bits.right;
+        gamepad_bits.a = keyboard_bits.a && gamepad_bits.a;
+        gamepad_bits.b = keyboard_bits.b && gamepad_bits.b;
+        gamepad_bits.select = keyboard_bits.select && gamepad_bits.select;
+        gamepad_bits.start = keyboard_bits.start && gamepad_bits.start;
 //-----------------------------------------------------------------------------
-        if (!joypad_bits.start || !joypad_bits.a || !joypad_bits.b) {
+        if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             /* copy the rom from the SD card to flash and start the game */
             char pathname[255];
             sprintf(pathname, "GB\\%s", filenames[selected]);
             load_cart_rom_file(pathname);
             break;
         }
-        if (!joypad_bits.down) {
+        if (!gamepad_bits.down) {
             /* select the next rom */
             draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
             selected++;
@@ -588,7 +587,7 @@ void rom_file_selector() {
             draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
-        if (!joypad_bits.up) {
+        if (!gamepad_bits.up) {
             /* select the previous rom */
             draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
             if (selected == 0) {
@@ -599,7 +598,7 @@ void rom_file_selector() {
             draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
-        if (!joypad_bits.right) {
+        if (!gamepad_bits.right) {
             /* select the next page */
             num_page++;
             numfiles = rom_file_selector_display_page(filenames, num_page);
@@ -613,7 +612,7 @@ void rom_file_selector() {
             draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
             sleep_ms(150);
         }
-        if ((!joypad_bits.left) && num_page > 0) {
+        if ((!gamepad_bits.left) && num_page > 0) {
             /* select the previous page */
             num_page--;
             numfiles = rom_file_selector_display_page(filenames, num_page);
@@ -629,16 +628,16 @@ void rom_file_selector() {
 #endif
 
 int main() {
-    enum gb_init_error_e ret;
-
     /* Overclock. */
     vreg_set_voltage(VREG_VOLTAGE_1_15);
     set_sys_clock_khz(288000, true);
 
-    /* Initialise USB serial connection for debugging. */
-    //stdio_init_all();
-    // time_init();
-    //sleep_ms(5000);
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+
+#if !NDEBUG
+    stdio_init_all();
+#endif
 
     putstdio("INIT: ");
 
@@ -703,7 +702,7 @@ int main() {
 
         /* Initialise GB context. */
         memcpy(rom_bank0, rom, sizeof(rom_bank0));
-        ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
+        enum gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
                       &gb_cart_ram_write, &gb_error, nullptr);
         putstdio("GB ");
 
@@ -735,7 +734,6 @@ int main() {
 
 //=============================================================================
         while (!restart) {
-            int input;
 #if USE_PS2_KBD
             ps2kbd.tick();
 #endif
@@ -778,49 +776,39 @@ if (frames == 60) {
     start_time = time_us_64();
 }
 #endif
-//------------------------------------------------------------------------
-            /* Update buttons state */
-            prev_joypad_bits.up = gb.direct.joypad_bits.up;
-            prev_joypad_bits.down = gb.direct.joypad_bits.down;
-            prev_joypad_bits.left = gb.direct.joypad_bits.left;
-            prev_joypad_bits.right = gb.direct.joypad_bits.right;
-            prev_joypad_bits.a = gb.direct.joypad_bits.a;
-            prev_joypad_bits.b = gb.direct.joypad_bits.b;
-            prev_joypad_bits.select = gb.direct.joypad_bits.select;
-            prev_joypad_bits.start = gb.direct.joypad_bits.start;
 
 #if USE_NESPAD
             nespad_tick();
 #endif
 //------------------------------------------------------------------------------
-            gb.direct.joypad_bits.up = keyboard_bits.up && joypad_bits.up;
-            gb.direct.joypad_bits.down = keyboard_bits.down && joypad_bits.down;
-            gb.direct.joypad_bits.left = keyboard_bits.left && joypad_bits.left;
-            gb.direct.joypad_bits.right = keyboard_bits.right && joypad_bits.right;
-            gb.direct.joypad_bits.a = keyboard_bits.a && joypad_bits.a;
-            gb.direct.joypad_bits.b = keyboard_bits.b && joypad_bits.b;
-            gb.direct.joypad_bits.select = keyboard_bits.select && joypad_bits.select;
-            gb.direct.joypad_bits.start = keyboard_bits.start && joypad_bits.start;
+            gb.direct.joypad_bits.up = keyboard_bits.up && gamepad_bits.up;
+            gb.direct.joypad_bits.down = keyboard_bits.down && gamepad_bits.down;
+            gb.direct.joypad_bits.left = keyboard_bits.left && gamepad_bits.left;
+            gb.direct.joypad_bits.right = keyboard_bits.right && gamepad_bits.right;
+            gb.direct.joypad_bits.a = keyboard_bits.a && gamepad_bits.a;
+            gb.direct.joypad_bits.b = keyboard_bits.b && gamepad_bits.b;
+            gb.direct.joypad_bits.select = keyboard_bits.select && gamepad_bits.select;
+            gb.direct.joypad_bits.start = keyboard_bits.start && gamepad_bits.start;
 //------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
             if (!gb.direct.joypad_bits.select) {
 #if ENABLE_SOUND
-                if (!gb.direct.joypad_bits.up && prev_joypad_bits.up) {
+                if (!gb.direct.joypad_bits.up) {
                     /* select + up: increase sound volume */
                     // i2s_increase_volume(&i2s_config);
                 }
-                if (!gb.direct.joypad_bits.down && prev_joypad_bits.down) {
+                if (!gb.direct.joypad_bits.down) {
                     /* select + down: decrease sound volume */
                     // i2s_decrease_volume(&i2s_config);
                 }
 #endif
-                if (!gb.direct.joypad_bits.up && prev_joypad_bits.up) {
+                if (!gb.direct.joypad_bits.up) {
                     resolution = static_cast<resolution_t>((resolution + 1) % 3);
                 }
-                if (!gb.direct.joypad_bits.down && prev_joypad_bits.down) {
+                if (!gb.direct.joypad_bits.down) {
                     resolution = static_cast<resolution_t>((resolution - 1) % 3);
                 }
-                if (!gb.direct.joypad_bits.right && prev_joypad_bits.right) {
+                if (!gb.direct.joypad_bits.right) {
                     /* select + right: select the next manual color palette */
                     if (manual_palette_selected < 12) {
                         manual_palette_selected++;
@@ -830,7 +818,7 @@ if (frames == 60) {
                                 palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
                     }
                 }
-                if (!gb.direct.joypad_bits.left && prev_joypad_bits.left) {
+                if (!gb.direct.joypad_bits.left) {
                     /* select + left: select the previous manual color palette */
                     if (manual_palette_selected > 0) {
                         manual_palette_selected--;
@@ -840,97 +828,19 @@ if (frames == 60) {
                                 palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
                     }
                 }
-                if (!gb.direct.joypad_bits.a && prev_joypad_bits.a) {
+                if (!gb.direct.joypad_bits.a) {
                     /* select + A: enable/disable frame-skip => fast-forward */
                     gb.direct.frame_skip = !gb.direct.frame_skip;
                     printf("I gb.direct.frame_skip = %d\n", gb.direct.frame_skip);
                 }
 
                 // Restart button
-                if (!gb.direct.joypad_bits.b && prev_joypad_bits.b) {
+                if (!gb.direct.joypad_bits.b) {
 #if ENABLE_SDCARD
                     write_cart_ram_file(&gb);
 #endif
                     restart = true;
                 }
-            }
-
-            /* Serial monitor commands */
-            input = getchar_timeout_us(0);
-            if (input == PICO_ERROR_TIMEOUT)
-                continue;
-
-            switch (input) {
-#if 0
-                static bool invert = false;
-                static bool sleep = false;
-                static uint8_t freq = 1;
-                static ili9225_color_mode_e colour = ILI9225_COLOR_MODE_FULL;
-
-                case 'i':
-                    invert = !invert;
-                    mk_ili9225_display_control(invert, colour);
-                    break;
-
-                case 'f':
-                    freq++;
-                    freq &= 0x0F;
-                    mk_ili9225_set_drive_freq(freq);
-                    printf("Freq %u\n", freq);
-                    break;
-#endif
-                case 'i':
-                    gb.direct.interlace = !gb.direct.interlace;
-                    break;
-
-                case 'f':
-                    gb.direct.frame_skip = !gb.direct.frame_skip;
-                    break;
-
-                case '\n':
-                case '\r': {
-                    gb.direct.joypad_bits.start = 0;
-                    break;
-                }
-
-                case '\b': {
-                    gb.direct.joypad_bits.select = 0;
-                    break;
-                }
-
-                case '8': {
-                    gb.direct.joypad_bits.up = 0;
-                    break;
-                }
-
-                case '2': {
-                    gb.direct.joypad_bits.down = 0;
-                    break;
-                }
-
-                case '4': {
-                    gb.direct.joypad_bits.left = 0;
-                    break;
-                }
-
-                case '6': {
-                    gb.direct.joypad_bits.right = 0;
-                    break;
-                }
-
-                case 'z':
-                case 'w': {
-                    gb.direct.joypad_bits.a = 0;
-                    break;
-                }
-
-                case 'x': {
-                    gb.direct.joypad_bits.b = 0;
-                    break;
-                }
-
-                default:
-                    break;
             }
         }
         puts("\nEmulation Ended");
