@@ -78,10 +78,11 @@
 #define FLASH_TARGET_OFFSET (1024 * 1024)
 const char *rom_filename = (const char*) (XIP_BASE + FLASH_TARGET_OFFSET);
 const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET)+4096;
-static unsigned char rom_bank0[65535];
+static unsigned char __attribute__((aligned(4))) rom_bank0[65535];
 
-static uint8_t ram[32768];
+static uint8_t __attribute__((aligned(4))) ram[32768];
 
+uint8_t fps;
 static const sVmode *vmode = nullptr;
 struct semaphore vga_start_semaphore;
 
@@ -278,6 +279,22 @@ void __time_critical_func(render_loop)() {
                 } else {
                     memset(linebuf->line, 0, 640);
                 }
+#if SHOW_FPS
+                // SHOW FPS
+                if (y < 16) {
+                    for (uint8_t x = 77; x < 80; x++) {
+                        uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
+                        color = colors[y / 16][x];
+
+                        for (uint8_t bit = 0; bit < 8; bit++) {
+                            if (CHECK_BIT(glyph_row, bit)) {
+                                // FOREGROUND
+                                linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
+                            }
+                        }
+                    }
+                }
+#endif
                 break;
             case RESOLUTION_2X2:
                 //if (y >= 48 && y < 48 + LCD_HEIGHT) {
@@ -738,6 +755,29 @@ int main() {
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
+#if SHOW_FPS
+if (frames == 60) {
+    uint64_t end_time;
+    uint32_t diff;
+    uint8_t fps;
+
+    end_time = time_us_64();
+    diff = end_time - start_time;
+    fps = ((uint64_t) frames * 1000 * 1000) / diff;
+    char fps_text[3];
+    sprintf(fps_text, "%i", fps);
+    draw_text(fps_text, 77, 0, 0xFF, 0x00);
+
+/*            printf("Frames: %u\r\n"
+                   "Time: %lu us\r\n"
+                   "FPS: %lu\r\n",
+                   frames, diff, fps);
+                   */
+    stdio_flush();
+    frames = 0;
+    start_time = time_us_64();
+}
+#endif
 //------------------------------------------------------------------------
             /* Update buttons state */
             prev_joypad_bits.up = gb.direct.joypad_bits.up;
@@ -846,24 +886,6 @@ int main() {
                 case 'f':
                     gb.direct.frame_skip = !gb.direct.frame_skip;
                     break;
-
-                case 'b': {
-                    uint64_t end_time;
-                    uint32_t diff;
-                    uint32_t fps;
-
-                    end_time = time_us_64();
-                    diff = end_time - start_time;
-                    fps = ((uint64_t) frames * 1000 * 1000) / diff;
-                    printf("Frames: %u\r\n"
-                           "Time: %lu us\r\n"
-                           "FPS: %lu\r\n",
-                           frames, diff, fps);
-                    stdio_flush();
-                    frames = 0;
-                    start_time = time_us_64();
-                    break;
-                }
 
                 case '\n':
                 case '\r': {
