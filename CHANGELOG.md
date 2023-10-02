@@ -1,3 +1,7 @@
+# v0.7.0
+
+Speedup and cosmetics
+
 # v0.6.3
 
 Double keypress in menu fix

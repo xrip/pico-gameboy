@@ -401,8 +401,8 @@ void write_cart_ram_file(struct gb_s *gb) {
     printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
-void load_cart_rom_file(char *filename) {
-    if (strcmp(rom_filename, filename) == 0) {
+void fileselector_load(char *pathname) {
+    if (strcmp(rom_filename, pathname) == 0) {
         printf("Launching last rom");
         return;
     }
@@ -413,8 +413,8 @@ void load_cart_rom_file(char *filename) {
     size_t bufsize = sizeof(ram);
     BYTE *buffer = (BYTE *) ram;
     auto ofs = FLASH_TARGET_OFFSET;
-    printf("Writing %s rom to flash %x\r\n", filename, ofs);
-    fr = f_open(&fil, filename, FA_READ);
+    printf("Writing %s rom to flash %x\r\n", pathname, ofs);
+    fr = f_open(&fil, pathname, FA_READ);
 
     UINT bytesRead;
     if (fr == FR_OK) {
@@ -424,7 +424,7 @@ void load_cart_rom_file(char *filename) {
         // TODO: Save it after success loading to prevent corruptions
         printf("Flashing %d bytes to flash address %x\r\n", 256, ofs);
         flash_range_erase(ofs, 4096);
-        flash_range_program(ofs, reinterpret_cast<const uint8_t *>(filename), 256);
+        flash_range_program(ofs, reinterpret_cast<const uint8_t *>(pathname), 256);
 
         ofs += 4096;
         for (;;) {
@@ -461,7 +461,7 @@ void load_cart_rom_file(char *filename) {
 /**
  * Function used by the rom file selector to display one page of .gb rom files
  */
-uint16_t rom_file_selector_display_page(char filenames[28][256], uint16_t page_number) {
+uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number) {
     // Dirty screen cleanup
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
@@ -523,14 +523,14 @@ uint16_t rom_file_selector_display_page(char filenames[28][256], uint16_t page_n
  * allowing the user to select which rom file to start
  * Copy your *.gb rom files to the root directory of the SD card
  */
-void rom_file_selector() {
+void fileselector() {
     uint16_t num_page = 0;
     char filenames[30][256];
 
     printf("Selecting ROM\r\n");
 
     /* display the first page with up to 22 rom files */
-    uint16_t numfiles = rom_file_selector_display_page(filenames, num_page);
+    uint16_t numfiles = fileselector_display_page(filenames, num_page);
 
     /* select the first rom */
     uint8_t current_file = 0;
@@ -569,7 +569,7 @@ void rom_file_selector() {
 //-----------------------------------------------------------------------------
         if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             /* copy the rom from the SD card to flash and start the game */
-            load_cart_rom_file(pathname);
+            fileselector_load(pathname);
             break;
         }
         if (!gamepad_bits.down) {
@@ -595,11 +595,11 @@ void rom_file_selector() {
         if (!gamepad_bits.right) {
             /* select the next page */
             num_page++;
-            numfiles = rom_file_selector_display_page(filenames, num_page);
+            numfiles = fileselector_display_page(filenames, num_page);
             if (numfiles == 0) {
                 /* no files in this page, go to the previous page */
                 num_page--;
-                numfiles = rom_file_selector_display_page(filenames, num_page);
+                numfiles = fileselector_display_page(filenames, num_page);
             }
             /* select the first file */
             current_file = 0;
@@ -609,7 +609,7 @@ void rom_file_selector() {
         if ((!gamepad_bits.left) && num_page > 0) {
             /* select the previous page */
             num_page--;
-            numfiles = rom_file_selector_display_page(filenames, num_page);
+            numfiles = fileselector_display_page(filenames, num_page);
             /* select the first file */
             current_file = 0;
             draw_text(filenames[current_file], 0, current_file, color, 0xF8);
@@ -689,7 +689,7 @@ int main() {
 #if ENABLE_SDCARD
         /* ROM File selector */
         resolution = RESOLUTION_TEXTMODE;
-        rom_file_selector();
+        fileselector();
 #endif
 #endif
         resolution = RESOLUTION_3X3;
