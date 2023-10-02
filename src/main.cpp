@@ -461,16 +461,16 @@ void load_cart_rom_file(char *filename) {
 /**
  * Function used by the rom file selector to display one page of .gb rom files
  */
-uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_page) {
+uint16_t rom_file_selector_display_page(char filenames[28][256], uint16_t page_number) {
     // Dirty screen cleanup
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
     char footer[80];
-    sprintf(footer, "=================== PAGE #%i -> NEXT PAGE / <- PREV. PAGE ====================", num_page);
+    sprintf(footer, "=================== PAGE #%i -> NEXT PAGE / <- PREV. PAGE ====================", page_number);
     draw_text(footer, 0, 9, 3, 11);
 
-    DIR dj;
-    FILINFO fno;
+    DIR directory;
+    FILINFO file;
     FRESULT fr;
 
     fr = f_mount(&fs, "", 1);
@@ -481,36 +481,41 @@ uint16_t rom_file_selector_display_page(char filename[28][256], uint16_t num_pag
 
     /* clear the filenames array */
     for (uint8_t ifile = 0; ifile < 8; ifile++) {
-        strcpy(filename[ifile], "");
+        strcpy(filenames[ifile], "");
     }
 
     /* search *.gb files */
-    uint16_t num_file = 0;
-    fr = f_findfirst(&dj, &fno, "GB\\", "*.gb");
+    uint16_t total_files = 0;
+    fr = f_findfirst(&directory, &file, "GB\\", "*.gb");
 
     /* skip the first N pages */
-    if (num_page > 0) {
-        while (num_file < num_page * 8 && fr == FR_OK && fno.fname[0]) {
-            num_file++;
-            fr = f_findnext(&dj, &fno);
+    if (page_number > 0) {
+        while (total_files < page_number * 8 && fr == FR_OK && file.fname[0]) {
+            total_files++;
+            fr = f_findnext(&directory, &file);
         }
     }
 
     /* store the filenames of this page */
-    num_file = 0;
-    while (num_file < 8 && fr == FR_OK && fno.fname[0]) {
-        strcpy(filename[num_file], fno.fname);
-        num_file++;
-        fr = f_findnext(&dj, &fno);
+    total_files = 0;
+    while (total_files < 8 && fr == FR_OK && file.fname[0]) {
+        strcpy(filenames[total_files], file.fname);
+        total_files++;
+        fr = f_findnext(&directory, &file);
     }
-    f_closedir(&dj);
+    f_closedir(&directory);
 
-    /* display *.gb rom files on screen */
-    // mk_ili9225_fill(0x0000);
-    for (uint8_t ifile = 0; ifile < num_file; ifile++) {
-        draw_text(filename[ifile], 0, ifile, 0xFF, 0x00);
+    for (uint8_t ifile = 0; ifile < total_files; ifile++) {
+        char pathname[255];
+        uint8_t color =  0x0d;
+        sprintf(pathname, "GB\\%s", filenames[ifile]);
+
+        if (strcmp(pathname, rom_filename) != 0) {
+            color = 0xFF;
+        }
+        draw_text(filenames[ifile], 0, ifile, color, 0x00);
     }
-    return num_file;
+    return total_files;
 }
 
 /**
@@ -528,11 +533,19 @@ void rom_file_selector() {
     uint16_t numfiles = rom_file_selector_display_page(filenames, num_page);
 
     /* select the first rom */
-    uint8_t selected = 0;
-    draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
+    uint8_t current_file = 0;
+    uint8_t color = 0xFF;
+    draw_text(filenames[current_file], 0, current_file, 0xFF, 0xF8);
 
     while (true) {
+        char pathname[255];
+        sprintf(pathname, "GB\\%s", filenames[current_file]);
 
+        if (strcmp(pathname, rom_filename) != 0) {
+            color = 0xFF;
+        } else {
+            color = 0x0d;
+        }
 #if USE_PS2_KBD
         ps2kbd.tick();
 #endif
@@ -556,29 +569,27 @@ void rom_file_selector() {
 //-----------------------------------------------------------------------------
         if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             /* copy the rom from the SD card to flash and start the game */
-            char pathname[255];
-            sprintf(pathname, "GB\\%s", filenames[selected]);
             load_cart_rom_file(pathname);
             break;
         }
         if (!gamepad_bits.down) {
             /* select the next rom */
-            draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
-            selected++;
-            if (selected >= numfiles)
-                selected = 0;
-            draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
+            draw_text(filenames[current_file], 0, current_file, color, 0x00);
+            current_file++;
+            if (current_file >= numfiles)
+                current_file = 0;
+            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
             sleep_ms(150);
         }
         if (!gamepad_bits.up) {
             /* select the previous rom */
-            draw_text(filenames[selected], 0, selected, 0xFF, 0x00);
-            if (selected == 0) {
-                selected = numfiles - 1;
+            draw_text(filenames[current_file], 0, current_file, color, 0x00);
+            if (current_file == 0) {
+                current_file = numfiles - 1;
             } else {
-                selected--;
+                current_file--;
             }
-            draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
+            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
             sleep_ms(150);
         }
         if (!gamepad_bits.right) {
@@ -591,8 +602,8 @@ void rom_file_selector() {
                 numfiles = rom_file_selector_display_page(filenames, num_page);
             }
             /* select the first file */
-            selected = 0;
-            draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
+            current_file = 0;
+            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
             sleep_ms(150);
         }
         if ((!gamepad_bits.left) && num_page > 0) {
@@ -600,8 +611,8 @@ void rom_file_selector() {
             num_page--;
             numfiles = rom_file_selector_display_page(filenames, num_page);
             /* select the first file */
-            selected = 0;
-            draw_text(filenames[selected], 0, selected, 0xFF, 0xF8);
+            current_file = 0;
+            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
             sleep_ms(150);
         }
         tight_loop_contents();
