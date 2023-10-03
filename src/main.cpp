@@ -21,7 +21,7 @@
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
 #define SHOW_FPS 1
-#define PEANUT_GB_HIGH_LCD_ACCURACY 1
+#define PEANUT_GB_HIGH_LCD_ACCURACY 0
 
 /* C Headers */
 #include <cstdio>
