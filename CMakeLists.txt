@@ -7,7 +7,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 
-project(gameboy C CXX ASM)
+project(gameboy-color-color C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -20,14 +20,15 @@ add_subdirectory(drivers/vga)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
 
-add_executable(gameboy
+add_executable(gameboy-color
         src/main.cpp
         ext/minigb_apu/minigb_apu.c
 )
 
-target_include_directories(gameboy PRIVATE inc ext/minigb_apu)
+target_include_directories(gameboy-color PRIVATE inc ext/minigb_apu)
 
-target_link_libraries(gameboy
+target_link_libraries(gameboy-color
+
         audio
 
         vga
@@ -49,7 +50,10 @@ target_link_libraries(gameboy
         pico_binary_info
 )
 
-target_compile_definitions(gameboy PRIVATE
+target_compile_definitions(gameboy-color PRIVATE
+        # 16MB flash
+        PICO_FLASH_SIZE_BYTES=16777216
+
         PARAM_ASSERTIONS_DISABLE_ALL=1
         PICO_ENTER_USB_BOOT_ON_EXIT=1
         PICO_STDIO_ENABLE_CRLF_SUPPORT=0
@@ -94,13 +98,13 @@ function(pico_add_verbose_dis_output TARGET)
     )
 endfunction()
 
-pico_set_program_name(gameboy "GameBoy for MURMULATOR devboard")
-pico_set_program_version(gameboy "v0.1")
+pico_set_program_name(gameboy-color "GameBoy for MURMULATOR devboard")
+pico_set_program_version(gameboy-color "v0.1")
 
-#pico_set_binary_type(gameboy copy_to_ram)
-#pico_set_binary_type(gameboy no_flash)
-pico_enable_stdio_usb(gameboy 1)
-pico_enable_stdio_uart(gameboy 0)
-pico_add_verbose_dis_output(gameboy)
-pico_add_bin_output(gameboy)
-pico_add_uf2_output(gameboy)
+#pico_set_binary_type(gameboy-color copy_to_ram)
+#pico_set_binary_type(gameboy-color no_flash)
+pico_enable_stdio_usb(gameboy-color 1)
+pico_enable_stdio_uart(gameboy-color 0)
+pico_add_verbose_dis_output(gameboy-color)
+pico_add_bin_output(gameboy-color)
+pico_add_uf2_output(gameboy-color)

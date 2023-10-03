@@ -21,7 +21,6 @@
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
 #define SHOW_FPS 1
-#define PEANUT_GB_HIGH_LCD_ACCURACY 0
 
 /* C Headers */
 #include <cstdio>
@@ -256,6 +255,11 @@ void __time_critical_func(render_loop)() {
                         uint16_t x3 = 80 + (x << 1) + x;
                         pixel = SCREEN[y - 8][x];
                         color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
+
+//                        if (gb.cgb.cgbMode) {  // CGB
+//                            color = gb.cgb.fixPalette[pixel];
+//                        }
+
                         linebuf->line[x3] = color;
                         linebuf->line[x3 + 1] = color;
                         linebuf->line[x3 + 2] = color;
@@ -286,8 +290,14 @@ void __time_critical_func(render_loop)() {
             case RESOLUTION_4X3:
                 if (y >= 8 && y < (8 + LCD_HEIGHT)) {
                     for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
+
                         pixel = SCREEN[(y - 8)][x / 4];
-                        (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
+//                        if (gb.cgb.cgbMode) {  // CGB
+//                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
+//                        } else {
+                            (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
+//                        }
+
                     }
                 } else {
                     memset(linebuf->line, 0, 640);
@@ -485,7 +495,7 @@ uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number
     }
 
     uint16_t total_files = 0;
-    result = f_findfirst(&directory, &file, "GB\\", "*.gb");
+    result = f_findfirst(&directory, &file, "GB\\", "*");
 
     /* skip the first N pages */
     if (page_number > 0) {
@@ -866,9 +876,32 @@ int main() {
 #if USE_PS2_KBD
             ps2kbd.tick();
 #endif
+
+#if USE_NESPAD
+            nespad_tick();
+#endif
+//------------------------------------------------------------------------------
+
+            gb.direct.joypad_bits.up = keyboard_bits.up && gamepad_bits.up;
+            gb.direct.joypad_bits.down = keyboard_bits.down && gamepad_bits.down;
+            gb.direct.joypad_bits.left = keyboard_bits.left && gamepad_bits.left;
+            gb.direct.joypad_bits.right = keyboard_bits.right && gamepad_bits.right;
+            gb.direct.joypad_bits.a = keyboard_bits.a && gamepad_bits.a;
+            gb.direct.joypad_bits.b = keyboard_bits.b && gamepad_bits.b;
+            gb.direct.joypad_bits.select = keyboard_bits.select && gamepad_bits.select;
+            gb.direct.joypad_bits.start = keyboard_bits.start && gamepad_bits.start;
+
+//gb.direct.joypad = nespad_state;
+//------------------------------------------------------------------------------
+            /* hotkeys (select + * combo)*/
+            if (!gb.direct.joypad_bits.select && !gb.direct.joypad_bits.start) {
+                menu();
+                continue;
+            }
             //-----------------------------------------------------------------
             gb_run_frame(&gb);
 
+            //gb.direct.interlace = 1;
             frames++;
 
 #if ENABLE_SOUND
@@ -894,24 +927,7 @@ int main() {
             }
 #endif
 
-#if USE_NESPAD
-            nespad_tick();
-#endif
-//------------------------------------------------------------------------------
-            gb.direct.joypad_bits.up = keyboard_bits.up && gamepad_bits.up;
-            gb.direct.joypad_bits.down = keyboard_bits.down && gamepad_bits.down;
-            gb.direct.joypad_bits.left = keyboard_bits.left && gamepad_bits.left;
-            gb.direct.joypad_bits.right = keyboard_bits.right && gamepad_bits.right;
-            gb.direct.joypad_bits.a = keyboard_bits.a && gamepad_bits.a;
-            gb.direct.joypad_bits.b = keyboard_bits.b && gamepad_bits.b;
-            gb.direct.joypad_bits.select = keyboard_bits.select && gamepad_bits.select;
-            gb.direct.joypad_bits.start = keyboard_bits.start && gamepad_bits.start;
-//------------------------------------------------------------------------------
-            /* hotkeys (select + * combo)*/
-            if (!gb.direct.joypad_bits.select && !gb.direct.joypad_bits.start) {
-                menu();
-                continue;
-            }
+
         }
         restart = false;
     }
