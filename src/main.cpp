@@ -82,7 +82,6 @@ static unsigned char __attribute__((aligned(4))) rom_bank0[65535];
 
 static uint8_t __attribute__((aligned(4))) ram[32768];
 
-uint8_t fps;
 static const sVmode *vmode = nullptr;
 struct semaphore vga_start_semaphore;
 
@@ -732,12 +731,7 @@ int main() {
             ps2kbd.tick();
 #endif
             //-----------------------------------------------------------------
-            gb.gb_frame = 0;
-
-            do {
-                __gb_step_cpu(&gb);
-                tight_loop_contents();
-            } while (HEDLEY_LIKELY(gb.gb_frame == 0));
+            gb_run_frame(&gb);
 
             frames++;
 
@@ -759,13 +753,6 @@ if (frames == 60) {
     char fps_text[3];
     sprintf(fps_text, "%i", fps);
     draw_text(fps_text, 77, 0, 0xFF, 0x00);
-
-/*            printf("Frames: %u\r\n"
-                   "Time: %lu us\r\n"
-                   "FPS: %lu\r\n",
-                   frames, diff, fps);
-                   */
-    stdio_flush();
     frames = 0;
     start_time = time_us_64();
 }
