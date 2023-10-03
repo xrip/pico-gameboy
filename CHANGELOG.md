@@ -1,3 +1,7 @@
+# v1.0.0
+
+Huge speedup, ingame menu on SELECT+START added
+
 # v0.7.0
 
 Speedup and cosmetics
