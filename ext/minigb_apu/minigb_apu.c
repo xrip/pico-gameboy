@@ -5,15 +5,13 @@
  * project is based on MiniGBS by Alex Baines: https://github.com/baines/MiniGBS
  */
 
-#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-
 #include "minigb_apu.h"
 
 #define DMG_CLOCK_FREQ_U	((unsigned)DMG_CLOCK_FREQ)
-#define AUDIO_NSAMPLES		(AUDIO_SAMPLES_TOTAL)
+#define AUDIO_NSAMPLES		(AUDIO_SAMPLES * 2u)
 
 #define AUDIO_MEM_SIZE		(0xFF3F - 0xFF10 + 1)
 #define AUDIO_ADDR_COMPENSATION	0xFF10
@@ -366,19 +364,17 @@ static void update_noise(int16_t *samples)
 /**
  * SDL2 style audio callback function.
  */
-void audio_callback(void *userdata, void *stream, int sz)
+void audio_callback(void *userdata, int16_t *stream, size_t len)
 {
-	int16_t *samples = stream;
-	assert(sz == (AUDIO_SAMPLES * 2 * sizeof(int16_t)));
+	/* Appease unused variable warning. */
+	(void)userdata;
 
-	/* userdata is unused and only here for ease of use with SDL2. */
-	(void) userdata;
+	memset(stream, 0, len);
 
-	memset(samples, 0, sz);
-	update_square(samples, 0);
-	update_square(samples, 1);
-	update_wave(samples);
-	update_noise(samples);
+	update_square(stream, 0);
+	update_square(stream, 1);
+	update_wave(stream);
+	update_noise(stream);
 }
 
 static void chan_trigger(uint_fast8_t i)

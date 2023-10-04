@@ -12,33 +12,20 @@ extern "C" {
 
 #include <stdint.h>
 
-#ifndef AUDIO_SAMPLE_RATE
-# define AUDIO_SAMPLE_RATE	32768
-#endif
+#define AUDIO_SAMPLE_RATE	44100
 
 #define DMG_CLOCK_FREQ		4194304.0
 #define SCREEN_REFRESH_CYCLES	70224.0
 #define VERTICAL_SYNC		(DMG_CLOCK_FREQ/SCREEN_REFRESH_CYCLES)
 
-/* Number of audio samples in each channel. */
 #define AUDIO_SAMPLES		((unsigned)(AUDIO_SAMPLE_RATE / VERTICAL_SYNC))
-/* Number of audio channels. The audio output is in interleaved stereo format.*/
-#define AUDIO_CHANNELS		2
-/* Number of audio samples output in each audio_callback call. */
-#define AUDIO_SAMPLES_TOTAL	(AUDIO_SAMPLES * 2)
+#define AUDIO_BUFFER_SIZE_BYTES (AUDIO_SAMPLES*4)
 
 /**
- * Fill allocated buffer "stream" with AUDIO_SAMPLES_TOTAL number of 16-bit
- * signed samples (native endian order) in stereo interleaved format.
- * "sz" must be equal to AUDIO_SAMPLES_TOTAL.
- * Each call corresponds to the the time taken for each VSYNC in the Game Boy.
- *
- * \param userdata Unused. Only kept for ease of use with SDL2.
- * \param stream Allocated pointer to store audio samples. Must be at least
- *		AUDIO_SAMPLES_TOTAL in size.
- * \param sz Size of stream. Must be AUDIO_SAMPLES_TOTAL.
+ * Fill allocated buffer "data" with "len" number of 32-bit floating point
+ * samples (native endian order) in stereo interleaved format.
  */
-void audio_callback(void *userdata, void *stream, int sz);
+void audio_callback(void *ptr, int16_t *data, size_t len);
 
 /**
  * Read audio register at given address "addr".

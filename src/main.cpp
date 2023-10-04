@@ -243,8 +243,8 @@ void __time_critical_func(render_loop)() {
 
     sem_acquire_blocking(&vga_start_semaphore);
     VgaInit(vmode, 640, 480);
-    uint8_t pixel;
-    uint8_t color;
+    uint_fast8_t pixel;
+    uint_fast8_t color;
     uint32_t y;
     while (linebuf = get_vga_line()) {
         y = linebuf->row;
@@ -252,7 +252,7 @@ void __time_critical_func(render_loop)() {
         switch (resolution) {
             case RESOLUTION_3X3:
                 if (y >= 8 && y < (8 + LCD_HEIGHT)) {
-                    for (int x = 0; x < LCD_WIDTH; x++) {
+                    for (uint_fast8_t x = 0; x < LCD_WIDTH; x++) {
                         uint16_t x3 = 80 + (x << 1) + x;
                         pixel = SCREEN[y - 8][x];
 
@@ -272,11 +272,11 @@ void __time_critical_func(render_loop)() {
 #if SHOW_FPS
                 // SHOW FPS
                 if (y < 16) {
-                    for (uint8_t x = 77; x < 80; x++) {
+                    for (uint_fast8_t x = 77; x < 80; x++) {
                         uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
                         color = colors[y / 16][x];
 
-                        for (uint8_t bit = 0; bit < 8; bit++) {
+                        for (uint_fast8_t bit = 0; bit < 8; bit++) {
                             if (CHECK_BIT(glyph_row, bit)) {
                                 // FOREGROUND
                                 linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
@@ -291,7 +291,7 @@ void __time_critical_func(render_loop)() {
                 break;
             case RESOLUTION_4X3:
                 if (y >= 8 && y < (8 + LCD_HEIGHT)) {
-                    for (int x = 0; x < LCD_WIDTH * 4; x += 4) {
+                    for (uint_fast8_t x = 0; x < LCD_WIDTH * 4; x += 4) {
 
                         pixel = SCREEN[(y - 8)][x / 4];
 //                        if (gb.cgb.cgbMode) {  // CGB
@@ -307,11 +307,11 @@ void __time_critical_func(render_loop)() {
                 break;
 
             case RESOLUTION_TEXTMODE:
-                for (uint8_t x = 0; x < 80; x++) {
+                for (uint_fast8_t x = 0; x < 80; x++) {
                     uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
                     color = colors[y / 16][x];
 
-                    for (uint8_t bit = 0; bit < 8; bit++) {
+                    for (uint_fast8_t bit = 0; bit < 8; bit++) {
                         if (CHECK_BIT(glyph_row, bit)) {
                             // FOREGROUND
                             linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
@@ -642,7 +642,7 @@ const char menu_items[MENU_ITEMS_NUMBER][80] = {
         { "Palette %i  " },
         { "Resolution Scale %i  " },
         { "Reset to ROM select" },
-        { "Return to %s" },
+        { "Return to %li" },
 };
 
 bool restart = false;
@@ -751,8 +751,9 @@ void menu() {
                 color = 0x01;
                 bg_color = 0xFF;
             }
-            if (strstr(menu_items[i], "%s") != nullptr) {
-                sprintf(item, menu_items[i], menu_values[i]);
+            if (strstr(menu_items[i], "%li") != nullptr) {
+//                sprintf(item, menu_items[i], menu_values[i]);
+                sprintf(item, menu_items[i], clock_get_hz(clk_sys));
             } else {
                 sprintf(item, menu_items[i], *(uint8_t *) menu_values[i]);
             }
@@ -769,14 +770,25 @@ int main() {
     /* Overclock. */
     vreg_set_voltage(VREG_VOLTAGE_1_15);
     set_sys_clock_khz(288000, true);
+/*
+    {
+        const unsigned vco = 792000000; // 264MHz/132MHz
+        const unsigned div1 = 3, div2 = 1;
 
+        vreg_set_voltage(VREG_VOLTAGE_1_15);
+        sleep_ms(2);
+        set_sys_clock_pll(vco, div1, div2);
+        sleep_ms(2);
+    }
+ */
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
 #if !NDEBUG
     stdio_init_all();
 #endif
-
+    sleep_ms(3000);
+    printf("\r\nSystem clock %li\r\n", clock_get_hz(clk_sys));
     putstdio("INIT: ");
 
     printf("VGA ");
@@ -789,6 +801,7 @@ int main() {
     ps2kbd.init_gpio();
 #endif
 
+
 #if USE_NESPAD
     printf("NESPAD %i", nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT));
 #endif
@@ -797,9 +810,9 @@ int main() {
     printf("SOUND ");
 
     // Allocate memory for the stream buffer
-    stream = static_cast<uint16_t *>(malloc(AUDIO_SAMPLES_TOTAL));
+    stream = static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
     assert(stream != NULL);
-    memset(stream, 0, AUDIO_SAMPLES_TOTAL);  // Zero out the stream buffer
+    memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
 
     // Initialize I2S sound driver
     i2s_config_t i2s_config = i2s_get_default_config();
@@ -816,6 +829,8 @@ int main() {
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_loop);
     sem_release(&vga_start_semaphore);
+
+    printf("\r\nSystem clock %li\r\n", clock_get_hz(clk_sys));
 
 #if ENABLE_SOUND
     // Initialize audio emulation
@@ -908,7 +923,7 @@ int main() {
 
 #if ENABLE_SOUND
             if (!gb.direct.frame_skip) {
-                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_SAMPLES_TOTAL);
+                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
