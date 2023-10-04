@@ -12,7 +12,7 @@ on:
 
 # Must match the project() name in CMakeLists.txt
 env:
-    APP_NAME: gameboy
+    APP_NAME: gameboy-color
 
 # Allow this workflow to write back to the repository
 permissions:
