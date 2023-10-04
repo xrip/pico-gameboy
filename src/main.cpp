@@ -108,6 +108,8 @@ uint16_t *stream;
     ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
     ((color565 & 0x1F) * 255 / 31) >> 6)
 
+
+
 typedef uint8_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
@@ -255,7 +257,7 @@ void __time_critical_func(render_loop)() {
                         pixel = SCREEN[y - 8][x];
 
                         if (gb.cgb.cgbMode) {  // CGB
-                            color = convertRGB565toRGB222(gb.cgb.fixPalette[pixel]);
+                            color = gb.cgb.fixPalette[pixel];
                         } else {
                             color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
                         }
