@@ -1,4 +1,4 @@
-# v2.0.0
+# v2.0.1
 
 GameBoy Color support, overall speed increase
 
