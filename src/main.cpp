@@ -13,7 +13,6 @@
  * OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
  * PERFORMANCE OF THIS SOFTWARE.
  */
-#pragma GCC optimize("Ofast")
 // Peanut-GB emulator settings
 #define ENABLE_LCD 1
 #define ENABLE_SOUND 1
@@ -254,11 +253,12 @@ void __time_critical_func(render_loop)() {
                     for (int x = 0; x < LCD_WIDTH; x++) {
                         uint16_t x3 = 80 + (x << 1) + x;
                         pixel = SCREEN[y - 8][x];
-                        color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
 
-//                        if (gb.cgb.cgbMode) {  // CGB
-//                            color = gb.cgb.fixPalette[pixel];
-//                        }
+                        if (gb.cgb.cgbMode) {  // CGB
+                            color = convertRGB565toRGB222(gb.cgb.fixPalette[pixel]);
+                        } else {
+                            color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
+                        }
 
                         linebuf->line[x3] = color;
                         linebuf->line[x3 + 1] = color;

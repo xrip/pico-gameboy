@@ -6,8 +6,8 @@ set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
+project(gameboy-color C CXX ASM)
 
-project(gameboy-color-color C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -24,7 +24,7 @@ add_executable(gameboy-color
         src/main.cpp
         ext/minigb_apu/minigb_apu.c
 )
-
+set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS "-g3")
 target_include_directories(gameboy-color PRIVATE inc ext/minigb_apu)
 
 target_link_libraries(gameboy-color
