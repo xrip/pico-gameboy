@@ -1,3 +1,7 @@
+# v2.0.0
+
+GameBoy Color support, overall speed increase
+
 # v1.0.0
 
 Huge speedup, ingame menu on SELECT+START added
