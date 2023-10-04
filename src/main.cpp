@@ -751,9 +751,8 @@ void menu() {
                 color = 0x01;
                 bg_color = 0xFF;
             }
-            if (strstr(menu_items[i], "%li") != nullptr) {
-//                sprintf(item, menu_items[i], menu_values[i]);
-                sprintf(item, menu_items[i], clock_get_hz(clk_sys));
+            if (strstr(menu_items[i], "%s") != nullptr) {
+                sprintf(item, menu_items[i], menu_values[i]);
             } else {
                 sprintf(item, menu_items[i], *(uint8_t *) menu_values[i]);
             }
@@ -788,7 +787,7 @@ int main() {
     stdio_init_all();
 #endif
     sleep_ms(3000);
-    printf("\r\nSystem clock %li\r\n", clock_get_hz(clk_sys));
+
     putstdio("INIT: ");
 
     printf("VGA ");
@@ -829,8 +828,6 @@ int main() {
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_loop);
     sem_release(&vga_start_semaphore);
-
-    printf("\r\nSystem clock %li\r\n", clock_get_hz(clk_sys));
 
 #if ENABLE_SOUND
     // Initialize audio emulation
