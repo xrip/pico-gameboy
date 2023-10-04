@@ -676,7 +676,7 @@ struct gb_s
 		uint16_t wramBankOffset;
 		uint8_t vramBank;
 		uint16_t vramBankOffset;
-		uint_fast8_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
+		uint8_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
 		uint8_t OAMPalette[0x40];
 		uint8_t BGPalette[0x40];
 		uint8_t OAMPaletteID;
@@ -1639,7 +1639,7 @@ void __gb_draw_line(struct gb_s *gb)
 		bg_map =
 			((gb->hram_io[IO_LCDC] & LCDC_BG_MAP) ?
 			 VRAM_BMAP_2 : VRAM_BMAP_1)
-			+ (bg_y >> 3) * 0x20;
+			+ ((bg_y >> 3) << 5);
 
 		/* The displays (what the player sees) X coordinate, drawn right
 		 * to left. */
@@ -1660,9 +1660,9 @@ void __gb_draw_line(struct gb_s *gb)
 
 		/* Select addressing mode. */
 		if(gb->hram_io[IO_LCDC] & LCDC_TILE_SELECT)
-			tile = VRAM_TILES_1 + idx * 0x10;
+			tile = VRAM_TILES_1 + (idx << 4);
 		else
-			tile = VRAM_TILES_2 + ((idx + 0x80) % 0x100) * 0x10;
+			tile = VRAM_TILES_2 + (((idx + 0x80) % 0x100) << 4);
 
 #if PEANUT_FULL_GBC_SUPPORT
 		if(gb->cgb.cgbMode)
@@ -1672,7 +1672,7 @@ void __gb_draw_line(struct gb_s *gb)
 		}
 		if(!(idxAtt & 0x40))
 		{
-			tile += 2 * py;
+			tile += py << 1;
 		}
 
 		/* fetch first tile */
@@ -1707,9 +1707,9 @@ void __gb_draw_line(struct gb_s *gb)
 				idxAtt = gb->vram[bg_map + (bg_x >> 3) + 0x2000];
 #endif
 				if(gb->hram_io[IO_LCDC] & LCDC_TILE_SELECT)
-					tile = VRAM_TILES_1 + idx * 0x10;
+					tile = VRAM_TILES_1 + (idx << 4);
 				else
-					tile = VRAM_TILES_2 + ((idx + 0x80) % 0x100) * 0x10;
+					tile = VRAM_TILES_2 + (((idx + 0x80) % 0x100) << 4);
 
 #if PEANUT_FULL_GBC_SUPPORT
 				if(gb->cgb.cgbMode)
@@ -1719,10 +1719,10 @@ void __gb_draw_line(struct gb_s *gb)
 				}
 				if(!(idxAtt & 0x40))
 				{
-					tile += 2 * py;
+                    tile += py << 1;
 				}
 #else
-				tile += 2 * py;
+                tile += py << 1;
 #endif
 				t1 = gb->vram[tile];
 				t2 = gb->vram[tile + 1];
@@ -1780,7 +1780,7 @@ void __gb_draw_line(struct gb_s *gb)
 		/* Calculate Window Map Address. */
 		win_line = (gb->hram_io[IO_LCDC] & LCDC_WINDOW_MAP) ?
 				    VRAM_BMAP_2 : VRAM_BMAP_1;
-		win_line += (gb->display.window_clear >> 3) * 0x20;
+		win_line += (gb->display.window_clear >> 3) << 5;
 
 		disp_x = LCD_WIDTH - 1;
 		win_x = disp_x - gb->hram_io[IO_WX] + 7;
@@ -1794,9 +1794,9 @@ void __gb_draw_line(struct gb_s *gb)
 #endif
 
 		if(gb->hram_io[IO_LCDC] & LCDC_TILE_SELECT)
-			tile = VRAM_TILES_1 + idx * 0x10;
+			tile = VRAM_TILES_1 + (idx << 4);
 		else
-			tile = VRAM_TILES_2 + ((idx + 0x80) % 0x100) * 0x10;
+			tile = VRAM_TILES_2 + (((idx + 0x80) % 0x100) << 4);
 
 #if PEANUT_FULL_GBC_SUPPORT
 		if(gb->cgb.cgbMode)
@@ -1806,7 +1806,7 @@ void __gb_draw_line(struct gb_s *gb)
 		}
 		if(!(idxAtt & 0x40))
 		{
-			tile += 2 * py;
+            tile += py << 1;
 		}
 
 		// fetch first tile
@@ -1821,7 +1821,7 @@ void __gb_draw_line(struct gb_s *gb)
 			t2 = gb->vram[tile + 1] >> px;
 		}
 #else
-		tile += 2 * py;
+        tile += py << 1;
 
 		// fetch first tile
 		t1 = gb->vram[tile] >> px;
@@ -1845,9 +1845,9 @@ void __gb_draw_line(struct gb_s *gb)
 #endif
 
 				if(gb->hram_io[IO_LCDC] & LCDC_TILE_SELECT)
-					tile = VRAM_TILES_1 + idx * 0x10;
+					tile = VRAM_TILES_1 + (idx << 4);
 				else
-					tile = VRAM_TILES_2 + ((idx + 0x80) % 0x100) * 0x10;
+					tile = VRAM_TILES_2 + (((idx + 0x80) % 0x100) << 4);
 
 #if PEANUT_FULL_GBC_SUPPORT
 				if(gb->cgb.cgbMode)
@@ -1857,10 +1857,10 @@ void __gb_draw_line(struct gb_s *gb)
 				}
 				if(!(idxAtt & 0x40))
 				{
-					tile += 2 * py;
+                    tile += py << 1;
 				}
 #else
-				tile += 2 * py;
+                tile += py << 1;
 #endif
 				t1 = gb->vram[tile];
 				t2 = gb->vram[tile + 1];
@@ -1926,9 +1926,9 @@ void __gb_draw_line(struct gb_s *gb)
 				sprite_number++)
 		{
 			/* Sprite Y position. */
-			uint8_t OY = gb->oam[4 * sprite_number + 0];
+			uint8_t OY = gb->oam[sprite_number << 2];
 			/* Sprite X position. */
-			uint8_t OX = gb->oam[4 * sprite_number + 1];
+			uint8_t OX = gb->oam[(sprite_number << 2)+ 1];
 
 			/* If sprite isn't on this line, continue. */
 			if(gb->hram_io[IO_LY] +
@@ -1973,14 +1973,14 @@ void __gb_draw_line(struct gb_s *gb)
 #endif
 			uint8_t py, t1, t2, dir, start, end, shift, disp_x;
 			/* Sprite Y position. */
-			uint8_t OY = gb->oam[4 * s + 0];
+			uint8_t OY = gb->oam[s << 2];
 			/* Sprite X position. */
-			uint8_t OX = gb->oam[4 * s + 1];
+			uint8_t OX = gb->oam[(s << 2) + 1];
 			/* Sprite Tile/Pattern Number. */
-			uint8_t OT = gb->oam[4 * s + 2]
+			uint8_t OT = gb->oam[(s << 2) + 2]
 				     & (gb->hram_io[IO_LCDC] & LCDC_OBJ_SIZE ? 0xFE : 0xFF);
 			/* Additional attributes. */
-			uint8_t OF = gb->oam[4 * s + 3];
+			uint8_t OF = gb->oam[(s << 2) + 3];
 
 #if !PEANUT_GB_HIGH_LCD_ACCURACY
 			/* If sprite isn't on this line, continue. */
@@ -2004,8 +2004,8 @@ void __gb_draw_line(struct gb_s *gb)
 #if PEANUT_FULL_GBC_SUPPORT
 			if(gb->cgb.cgbMode)
 			{
-				t1 = gb->vram[((OF & OBJ_BANK) << 10) + VRAM_TILES_1 + OT * 0x10 + 2 * py];
-				t2 = gb->vram[((OF & OBJ_BANK) << 10) + VRAM_TILES_1 + OT * 0x10 + 2 * py + 1];
+				t1 = gb->vram[((OF & OBJ_BANK) << 10) + VRAM_TILES_1 + (OT << 4) + (py << 1)];
+				t2 = gb->vram[((OF & OBJ_BANK) << 10) + VRAM_TILES_1 + (OT << 4) + (py << 1) + 1];
 			}
 			else
 #endif

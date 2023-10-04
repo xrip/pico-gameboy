@@ -21,10 +21,9 @@ add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
 
 add_executable(gameboy-color
-        src/main.cpp
         ext/minigb_apu/minigb_apu.c
+        src/main.cpp
 )
-set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS "-g3")
 target_include_directories(gameboy-color PRIVATE inc ext/minigb_apu)
 
 target_link_libraries(gameboy-color

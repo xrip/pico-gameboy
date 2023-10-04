@@ -797,9 +797,9 @@ int main() {
     printf("SOUND ");
 
     // Allocate memory for the stream buffer
-    stream = static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
+    stream = static_cast<uint16_t *>(malloc(AUDIO_SAMPLES_TOTAL));
     assert(stream != NULL);
-    memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
+    memset(stream, 0, AUDIO_SAMPLES_TOTAL);  // Zero out the stream buffer
 
     // Initialize I2S sound driver
     i2s_config_t i2s_config = i2s_get_default_config();
@@ -908,7 +908,7 @@ int main() {
 
 #if ENABLE_SOUND
             if (!gb.direct.frame_skip) {
-                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
+                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_SAMPLES_TOTAL);
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
