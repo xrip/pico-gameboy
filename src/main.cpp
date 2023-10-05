@@ -578,6 +578,9 @@ void fileselector() {
         gamepad_bits.select = keyboard_bits.select && gamepad_bits.select;
         gamepad_bits.start = keyboard_bits.start && gamepad_bits.start;
 //-----------------------------------------------------------------------------
+        if (!gamepad_bits.select) {
+            break;
+        }
         if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             /* copy the rom from the SD card to flash and start the game */
             fileselector_load(pathname);
@@ -767,26 +770,26 @@ void menu() {
 
 int main() {
     /* Overclock. */
-    vreg_set_voltage(VREG_VOLTAGE_1_15);
-    set_sys_clock_khz(288000, true);
-/*
-    {
-        const unsigned vco = 792000000; // 264MHz/132MHz
-        const unsigned div1 = 3, div2 = 1;
+    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
+    sleep_ms(33);
 
-        vreg_set_voltage(VREG_VOLTAGE_1_15);
-        sleep_ms(2);
-        set_sys_clock_pll(vco, div1, div2);
-        sleep_ms(2);
-    }
- */
+    set_sys_clock_khz(412*1000, true);
+
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
+    for (int i = 0; i < 6; i++) {
+        sleep_ms(33);
+        gpio_put(PICO_DEFAULT_LED_PIN, true);
+        sleep_ms(33);
+        gpio_put(PICO_DEFAULT_LED_PIN, false);
+    }
+
 #if !NDEBUG
     stdio_init_all();
+        sleep_ms(3000);
 #endif
-    sleep_ms(3000);
+
 
     putstdio("INIT: ");
 
