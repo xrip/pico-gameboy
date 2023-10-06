@@ -74,13 +74,13 @@ jobs:
         run: |
           export PICO_SDK_PATH=$HOME/pico-sdk && \
           mkdir build && cd build && \
-          cmake .. && make \ 
-          cmake -DOVERCLOCKING=288 .. && make \
-          cmake -DOVERCLOCKING=300 .. && make \
-          cmake -DOVERCLOCKING=312 .. && make \
-          cmake -DOVERCLOCKING=333 .. && make \
-          cmake -DOVERCLOCKING=366 .. && make \
-          cmake -DOVERCLOCKING=396 .. && make \
+          cmake .. && make && \ 
+          cmake -DOVERCLOCKING=288 .. && make && \
+          cmake -DOVERCLOCKING=300 .. && make && \
+          cmake -DOVERCLOCKING=312 .. && make && \
+          cmake -DOVERCLOCKING=333 .. && make && \
+          cmake -DOVERCLOCKING=366 .. && make && \
+          cmake -DOVERCLOCKING=396 .. && make && \
           cmake -DOVERCLOCKING=412 .. && make 
 
       - name: Create release
