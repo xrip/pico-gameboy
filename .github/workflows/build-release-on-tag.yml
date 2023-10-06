@@ -60,18 +60,21 @@ jobs:
           cd pico-sdk/ && \
           git submodule update --init
 
-      - name: Build the project
+      - name: Build the basic version
         run: |
           export PICO_SDK_PATH=$HOME/pico-sdk && \
           mkdir build && cd build && \
-          cmake .. && make && \ 
-          cmake -DOVERCLOCKING=288 .. && make && \
+          cmake .. && make 
+
+      - name: Build the overclocked versions
+        run: cmake -DOVERCLOCKING=288 .. && make && \
           cmake -DOVERCLOCKING=300 .. && make && \
           cmake -DOVERCLOCKING=312 .. && make && \
           cmake -DOVERCLOCKING=333 .. && make && \
           cmake -DOVERCLOCKING=366 .. && make && \
           cmake -DOVERCLOCKING=396 .. && make && \
-          cmake -DOVERCLOCKING=412 .. && make 
+          cmake -DOVERCLOCKING=412 .. && make
+
 
       - name: Create release
         uses: softprops/action-gh-release@v1
