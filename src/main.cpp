@@ -109,7 +109,6 @@ uint16_t *stream;
     ((color565 & 0x1F) * 255 / 31) >> 6)
 
 
-
 typedef uint8_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
@@ -170,7 +169,8 @@ static bool isInReport(hid_keyboard_report_t const *report, const unsigned char 
     return false;
 }
 
-void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
+void
+__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
 /*    printf("HID key report modifiers %2.2X report ", report->modifier);
     for (unsigned char i: report->keycode)
         printf("%2.2X", i);
@@ -297,7 +297,7 @@ void __time_critical_func(render_loop)() {
 //                        if (gb.cgb.cgbMode) {  // CGB
 //                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
 //                        } else {
-                            (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
+                        (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
 //                        }
 
                     }
@@ -349,33 +349,32 @@ void __always_inline lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], c
  */
 void read_cart_ram_file(struct gb_s *gb) {
     char filename[16];
+    char pathname[20];
     uint_fast32_t save_size;
-    UINT br;
+    UINT bytes_read;
+    FRESULT result;
+    FIL file;
 
     gb_get_rom_name(gb, filename);
+
+    sprintf(pathname, "GB\\%s", filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
 
-        FRESULT fr = f_mount(&fs, "", 1);
-        if (FR_OK != fr) {
-            printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
-            return;
-        }
 
-        FIL fil;
-        fr = f_open(&fil, filename, FA_READ);
-        if (fr == FR_OK) {
-            f_read(&fil, ram, f_size(&fil), &br);
+        result = f_open(&file, pathname, FA_READ);
+        if (result == FR_OK) {
+            f_read(&file, ram, f_size(&file), &bytes_read);
         } else {
-            printf("E f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
+            printf("E f_open(%s) error: %s (%d)\n", pathname, FRESULT_str(result), result);
         }
 
-        fr = f_close(&fil);
-        if (fr != FR_OK) {
-            printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
+        result = f_close(&file);
+        if (result != FR_OK) {
+            printf("E f_close error: %s (%d)\n", FRESULT_str(result), result);
         }
     }
-    printf("I read_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
+    printf("I read_cart_ram_file(%s) COMPLETE (%u bytes)\n", pathname, save_size);
 }
 
 /**
@@ -383,36 +382,35 @@ void read_cart_ram_file(struct gb_s *gb) {
  */
 void write_cart_ram_file(struct gb_s *gb) {
     char filename[16];
+    char pathname[20];
     uint_fast32_t save_size;
-    UINT bw;
+    UINT bytes_written;
+    FRESULT result;
+    FIL file;
 
     gb_get_rom_name(gb, filename);
+
+    sprintf(pathname, "GB\\%s", filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
 
-        FRESULT fr = f_mount(&fs, "", 1);
-        if (FR_OK != fr) {
-            printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
-            return;
-        }
 
-        FIL fil;
-        fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
-        if (fr == FR_OK) {
-            f_write(&fil, ram, save_size, &bw);
+        result = f_open(&file, pathname, FA_CREATE_NEW | FA_WRITE | FA_READ);
+        if (result == FR_OK) {
+            f_write(&file, ram, save_size, &bytes_written);
         } else {
-            printf("E f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
+            printf("E f_open(%s) error: %s (%d)\n", pathname, FRESULT_str(result), result);
         }
 
-        fr = f_close(&fil);
-        if (fr != FR_OK) {
-            printf("E f_close error: %s (%d)\n", FRESULT_str(fr), fr);
+        result = f_close(&file);
+        if (result != FR_OK) {
+            printf("E f_close error: %s (%d)\n", FRESULT_str(result), result);
         }
     }
-    printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
+    printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", pathname, save_size);
 }
 
-void  fileselector_load(char *pathname) {
+void fileselector_load(char *pathname) {
     if (strcmp(rom_filename, pathname) == 0) {
         printf("Launching last rom");
         return;
@@ -473,7 +471,7 @@ void  fileselector_load(char *pathname) {
  * Function used by the rom file selector to display one page of .gb rom files
  */
 uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number) {
-#define ROWS TEXTMODE_ROWS-1
+#define ROWS (TEXTMODE_ROWS-1)
     // Dirty screen cleanup
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
@@ -492,7 +490,7 @@ uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number
     }
 
     /* clear the filenames array */
-    for (uint8_t ifile = 0; ifile < (TEXTMODE_ROWS - 1); ifile++) {
+    for (uint8_t ifile = 0; ifile < ROWS; ifile++) {
         strcpy(filenames[ifile], "");
     }
 
@@ -670,6 +668,11 @@ void menu() {
     int current_item = 0;
     char item[80];
 
+#if ENABLE_SDCARD
+    write_cart_ram_file(&gb);
+    sleep_ms(100);
+#endif
+
     while (!exit) {
 #if USE_PS2_KBD
         ps2kbd.tick();
@@ -734,9 +737,6 @@ void menu() {
         if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             switch (current_item) {
                 case MENU_ITEMS_NUMBER - 2:
-#if ENABLE_SDCARD
-                    write_cart_ram_file(&gb);
-#endif
                     restart = true;
                 case MENU_ITEMS_NUMBER - 1:
                     exit = true;
@@ -773,7 +773,7 @@ int main() {
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
     sleep_ms(33);
 
-    set_sys_clock_khz(412*1000, true);
+    set_sys_clock_khz(396 * 1000, true);
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
@@ -790,6 +790,13 @@ int main() {
         sleep_ms(3000);
 #endif
 
+    printf("Mounting SD\r\n");
+
+    FRESULT result = f_mount(&fs, "", 1);
+    if (FR_OK != result) {
+        printf("E f_mount error: %s (%d)\n", FRESULT_str(result), result);
+        //return 0;
+    }
 
     putstdio("INIT: ");
 

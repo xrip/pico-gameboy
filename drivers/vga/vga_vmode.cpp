@@ -213,8 +213,8 @@ void VgaCfgDef(sVgaCfg* cfg)
 	cfg->height = 480;		// height in lines
 	cfg->wfull = 0;			// width of full screen, corresponding to 'hfull' time (0=use 'width' parameter)
 	cfg->video = &VideoVGA;		// used video timings
-	cfg->freq = 412*1000;       // required minimal system frequency in kHz (real frequency can be higher)
-	cfg->fmax = 412*1000;		// maximal system frequency in kHz (limit resolution if needed)
+	cfg->freq = 396*1000;       // required minimal system frequency in kHz (real frequency can be higher)
+	cfg->fmax = 396*1000;		// maximal system frequency in kHz (limit resolution if needed)
 	cfg->dbly = False;		// double in Y direction
 	cfg->lockfreq = True;		// lock required frequency, do not change it
 }
