@@ -56,19 +56,9 @@ jobs:
       - name: Install Pico SDk
         run: |
           cd $HOME && \
-          git clone https://github.com/raspberrypi/pico-sdk.git --branch master && \
+          git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git --branch master && \
           cd pico-sdk/ && \
           git submodule update --init
-
-      - name: Install picotool
-        run: |
-          cd $HOME && \
-          export PICO_SDK_PATH=$HOME/pico-sdk && \
-          git clone https://github.com/raspberrypi/picotool.git --branch master && \
-          cd picotool/ && \
-          mkdir build && \
-          cd build && \
-          cmake .. && make 
 
       - name: Build the project
         run: |
