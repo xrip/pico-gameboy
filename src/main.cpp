@@ -422,8 +422,8 @@ void fileselector_load(char *pathname) {
     FIL fil;
     FRESULT fr;
 
-    size_t bufsize = sizeof(SCREEN)&0xfffff000;
-    BYTE *buffer = (BYTE *) SCREEN;
+    size_t bufsize = sizeof(ram);
+    BYTE *buffer = (BYTE *) ram;
     auto ofs = FLASH_TARGET_OFFSET;
     printf("Writing %s rom to flash %x\r\n", pathname, ofs);
     fr = f_open(&fil, pathname, FA_READ);
