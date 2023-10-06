@@ -1,3 +1,7 @@
+# v2.1.0
+
+Various overclocking variants
+
 # v2.0.1
 
 GameBoy Color support, overall speed increase

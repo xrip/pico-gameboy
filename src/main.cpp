@@ -20,6 +20,9 @@
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
 #define SHOW_FPS 1
+#ifndef OVERCLOCKING
+#define OVERCLOCKING 270
+#endif
 
 /* C Headers */
 #include <cstdio>
@@ -294,11 +297,11 @@ void __time_critical_func(render_loop)() {
                     for (uint_fast8_t x = 0; x < LCD_WIDTH * 4; x += 4) {
 
                         pixel = SCREEN[(y - 8)][x / 4];
-//                        if (gb.cgb.cgbMode) {  // CGB
-//                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
-//                        } else {
-                        (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
-//                        }
+                        if (gb.cgb.cgbMode) {  // CGB
+                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
+                        } else {
+                            (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
+                        }
 
                     }
                 } else {
@@ -419,8 +422,8 @@ void fileselector_load(char *pathname) {
     FIL fil;
     FRESULT fr;
 
-    size_t bufsize = sizeof(ram);
-    BYTE *buffer = (BYTE *) ram;
+    size_t bufsize = sizeof(SCREEN)&0xfffff000;
+    BYTE *buffer = (BYTE *) SCREEN;
     auto ofs = FLASH_TARGET_OFFSET;
     printf("Writing %s rom to flash %x\r\n", pathname, ofs);
     fr = f_open(&fil, pathname, FA_READ);
@@ -773,7 +776,7 @@ int main() {
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
     sleep_ms(33);
 
-    set_sys_clock_khz(396 * 1000, true);
+    set_sys_clock_khz(OVERCLOCKING * 1000, true);
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);

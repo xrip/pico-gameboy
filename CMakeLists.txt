@@ -20,20 +20,24 @@ add_subdirectory(drivers/vga)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
 
-add_executable(gameboy-color
+add_executable(${PROJECT_NAME}
         ext/minigb_apu/minigb_apu.c
         src/main.cpp
 )
 
-pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+if(OVERCLOCKING)
+    set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME  "${PROJECT_NAME}-${OVERCLOCKING}MHz")
 
-pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OVERCLOCKING=${OVERCLOCKING})
 
-target_include_directories(gameboy-color PRIVATE inc ext/minigb_apu)
+    pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
+    target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+    pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+endif ()
 
-target_link_libraries(gameboy-color
+target_include_directories(${PROJECT_NAME} PRIVATE inc ext/minigb_apu)
 
+target_link_libraries(${PROJECT_NAME}
         audio
 
         vga
@@ -55,7 +59,7 @@ target_link_libraries(gameboy-color
         pico_binary_info
 )
 
-target_compile_definitions(gameboy-color PRIVATE
+target_compile_definitions(${PROJECT_NAME} PRIVATE
         # 16MB flash
         PICO_FLASH_SIZE_BYTES=16777216
 
@@ -103,13 +107,13 @@ function(pico_add_verbose_dis_output TARGET)
     )
 endfunction()
 
-pico_set_program_name(gameboy-color "GameBoy for MURMULATOR devboard")
-pico_set_program_version(gameboy-color "v0.1")
+pico_set_program_name(${PROJECT_NAME} "GameBoy for MURMULATOR devboard")
+pico_set_program_version(${PROJECT_NAME} "v0.1")
 
-#pico_set_binary_type(gameboy-color copy_to_ram)
-#pico_set_binary_type(gameboy-color no_flash)
-pico_enable_stdio_usb(gameboy-color 1)
-pico_enable_stdio_uart(gameboy-color 0)
-pico_add_verbose_dis_output(gameboy-color)
-pico_add_bin_output(gameboy-color)
-pico_add_uf2_output(gameboy-color)
+#pico_set_binary_type(${PROJECT_NAME} copy_to_ram)
+#pico_set_binary_type(${PROJECT_NAME} no_flash)
+pico_enable_stdio_usb(${PROJECT_NAME} 1)
+pico_enable_stdio_uart(${PROJECT_NAME} 0)
+#pico_add_verbose_dis_output(${PROJECT_NAME})
+#pico_add_bin_output(${PROJECT_NAME})
+pico_add_uf2_output(${PROJECT_NAME})
