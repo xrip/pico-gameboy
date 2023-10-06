@@ -20,6 +20,9 @@
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
 #define SHOW_FPS 1
+#ifndef OVERCLOCKING
+#define OVERCLOCKING 270
+#endif
 
 /* C Headers */
 #include <cstdio>
@@ -294,11 +297,11 @@ void __time_critical_func(render_loop)() {
                     for (uint_fast8_t x = 0; x < LCD_WIDTH * 4; x += 4) {
 
                         pixel = SCREEN[(y - 8)][x / 4];
-//                        if (gb.cgb.cgbMode) {  // CGB
-//                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
-//                        } else {
+                        if (gb.cgb.cgbMode) {  // CGB
+                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
+                        } else {
                             (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
-//                        }
+                        }
 
                     }
                 } else {
@@ -473,7 +476,7 @@ void  fileselector_load(char *pathname) {
  * Function used by the rom file selector to display one page of .gb rom files
  */
 uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number) {
-#define ROWS TEXTMODE_ROWS-1
+#define ROWS (TEXTMODE_ROWS-1)
     // Dirty screen cleanup
     memset(&textmode, 0x00, sizeof(textmode));
     memset(&colors, 0x00, sizeof(colors));
@@ -492,7 +495,7 @@ uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number
     }
 
     /* clear the filenames array */
-    for (uint8_t ifile = 0; ifile < (TEXTMODE_ROWS - 1); ifile++) {
+    for (uint8_t ifile = 0; ifile < ROWS; ifile++) {
         strcpy(filenames[ifile], "");
     }
 
@@ -670,6 +673,11 @@ void menu() {
     int current_item = 0;
     char item[80];
 
+#if ENABLE_SDCARD
+    write_cart_ram_file(&gb);
+    sleep_ms(100);
+#endif
+
     while (!exit) {
 #if USE_PS2_KBD
         ps2kbd.tick();
@@ -734,9 +742,6 @@ void menu() {
         if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
             switch (current_item) {
                 case MENU_ITEMS_NUMBER - 2:
-#if ENABLE_SDCARD
-                    write_cart_ram_file(&gb);
-#endif
                     restart = true;
                 case MENU_ITEMS_NUMBER - 1:
                     exit = true;
@@ -773,7 +778,7 @@ int main() {
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
     sleep_ms(33);
 
-    set_sys_clock_khz(396*1000, true);
+    set_sys_clock_khz(OVERCLOCKING * 1000, true);
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
