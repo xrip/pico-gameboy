@@ -33,6 +33,11 @@ if(OVERCLOCKING)
     pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
     target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
     pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+
+    message(STATUS "==================================")
+    message(STATUS "Overclocking ${OVERCLOCKING}MHz enabled")
+    message(STATUS "==================================")
+    message(STATUS "")
 endif ()
 
 target_include_directories(${PROJECT_NAME} PRIVATE inc ext/minigb_apu)
