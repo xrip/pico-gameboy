@@ -67,7 +67,9 @@ jobs:
           cmake .. && make 
 
       - name: Build the overclocked versions
-        run: cmake -DOVERCLOCKING=288 .. && make && \
+        run: |
+          cd build && \
+          cmake -DOVERCLOCKING=288 .. && make && \
           cmake -DOVERCLOCKING=300 .. && make && \
           cmake -DOVERCLOCKING=312 .. && make && \
           cmake -DOVERCLOCKING=333 .. && make && \
