@@ -694,6 +694,7 @@ void save() {
     UINT bw;
 
     f_write(&fd, &gb, sizeof(gb), &bw);
+    f_write(&fd, ram, sizeof(ram), &bw);
     f_close(&fd);
 }
 
@@ -709,6 +710,7 @@ void load() {
     UINT br;
 
     f_read(&fd, &gb, sizeof(gb), &br);
+    f_read(&fd, ram, sizeof(ram), &br);
     f_close(&fd);
 }
 
