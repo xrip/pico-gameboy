@@ -684,7 +684,10 @@ const MenuItem menu_items[MENU_ITEMS_NUMBER] = {
 
 void save() {
     char pathname[255];
-    sprintf(pathname, "GB\\%s.save", rom_filename);
+    char filename[16];
+
+    gb_get_rom_name(&gb, filename);
+    sprintf(pathname, "GB\\%s.save", filename);
     FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
     fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
@@ -696,7 +699,10 @@ void save() {
 
 void load() {
     char pathname[255];
-    sprintf(pathname, "GB\\%s.save", rom_filename);
+    char filename[16];
+
+    gb_get_rom_name(&gb, filename);
+    sprintf(pathname, "GB\\%s.save", filename);
     FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
     fr = f_open(&fd, pathname, FA_READ);
