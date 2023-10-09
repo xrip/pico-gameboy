@@ -1,3 +1,8 @@
+# v2.2.0
+
+Added ability to save and load gamestate. Better menu system.
+
+
 # v2.1.0
 
 Various overclocking variants

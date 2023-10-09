@@ -112,8 +112,8 @@ function(pico_add_verbose_dis_output TARGET)
     )
 endfunction()
 
-pico_set_program_name(${PROJECT_NAME} "GameBoy for MURMULATOR devboard")
-pico_set_program_version(${PROJECT_NAME} "v0.1")
+pico_set_program_name(gameboy-color "GameBoy Emulator by xrip")
+pico_set_program_version(gameboy-color "development version")
 
 #pico_set_binary_type(${PROJECT_NAME} copy_to_ram)
 #pico_set_binary_type(${PROJECT_NAME} no_flash)

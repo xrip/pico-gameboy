@@ -19,7 +19,6 @@
 #define ENABLE_SDCARD 1
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
-#define SHOW_FPS 1
 #ifndef OVERCLOCKING
 #define OVERCLOCKING 270
 #endif
@@ -79,7 +78,6 @@
 #define FLASH_TARGET_OFFSET (1024 * 1024)
 const char *rom_filename = (const char *) (XIP_BASE + FLASH_TARGET_OFFSET);
 const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET) + 4096;
-static unsigned char __attribute__((aligned(4))) rom_bank0[65535];
 
 static uint8_t __attribute__((aligned(4))) ram[32768];
 
@@ -93,7 +91,7 @@ uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
 #define TEXTMODE_COLS 80
 char textmode[TEXTMODE_ROWS][TEXTMODE_COLS];
 uint8_t colors[TEXTMODE_ROWS][TEXTMODE_COLS];
-
+bool show_fps = false;
 static FATFS fs;
 
 #if ENABLE_SOUND
@@ -110,7 +108,6 @@ uint16_t *stream;
     (((((color565 >> 11) & 0x1F) * 255 / 31) >> 6) << 4 | \
     ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
     ((color565 & 0x1F) * 255 / 31) >> 6)
-
 
 
 typedef uint8_t palette222_t[3][4];
@@ -173,7 +170,8 @@ static bool isInReport(hid_keyboard_report_t const *report, const unsigned char 
     return false;
 }
 
-void __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
+void
+__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
 /*    printf("HID key report modifiers %2.2X report ", report->modifier);
     for (unsigned char i: report->keycode)
         printf("%2.2X", i);
@@ -199,9 +197,6 @@ Ps2Kbd_Mrmltr ps2kbd(
  * Returns a byte from the ROM file at the given address.
  */
 uint8_t __not_in_flash_func(gb_rom_read)(struct gb_s *gb, const uint_fast32_t addr) {
-    if (addr < sizeof(rom_bank0))
-        return rom_bank0[addr];
-
     return rom[addr];
 }
 
@@ -272,25 +267,22 @@ void __time_critical_func(render_loop)() {
                 } else {
                     memset(linebuf->line, 0, 640);
                 }
-#if SHOW_FPS
                 // SHOW FPS
-                if (y < 16) {
+                if (show_fps && y < 16) {
                     for (uint_fast8_t x = 77; x < 80; x++) {
                         uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
-                        color = colors[y / 16][x];
 
                         for (uint_fast8_t bit = 0; bit < 8; bit++) {
                             if (CHECK_BIT(glyph_row, bit)) {
                                 // FOREGROUND
-                                linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
+                                linebuf->line[8 * x + bit] = 11;
                             } else {
                                 // BACKGROUND
-                                linebuf->line[8 * x + bit] = color & 0xF;
+                                linebuf->line[8 * x + bit] = 0;
                             }
                         }
                     }
                 }
-#endif
                 break;
             case RESOLUTION_4X3:
                 if (y >= 8 && y < (8 + LCD_HEIGHT)) {
@@ -306,6 +298,19 @@ void __time_critical_func(render_loop)() {
                     }
                 } else {
                     memset(linebuf->line, 0, 640);
+                }
+                // SHOW FPS
+                if (show_fps && y < 16) {
+                    for (uint_fast8_t x = 77; x < 80; x++) {
+                        uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
+
+                        for (uint_fast8_t bit = 0; bit < 8; bit++) {
+                            if (CHECK_BIT(glyph_row, bit)) {
+                                // FOREGROUND
+                                linebuf->line[8 * x + bit] = 11;
+                            }
+                        }
+                    }
                 }
                 break;
 
@@ -415,7 +420,7 @@ void write_cart_ram_file(struct gb_s *gb) {
     printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
-void  fileselector_load(char *pathname) {
+void fileselector_load(char *pathname) {
     if (strcmp(rom_filename, pathname) == 0) {
         printf("Launching last rom");
         return;
@@ -637,31 +642,69 @@ void fileselector() {
 }
 
 #endif
-
-
-#define MENU_ITEMS_NUMBER 5
-#if MENU_ITEMS_NUMBER > TEXTMODE_ROWS
-error("Too much menu items!")
-#endif
-const char menu_items[MENU_ITEMS_NUMBER][80] = {
-        { "Frameskip %i  " },
-        { "Palette %i  " },
-        { "Resolution Scale %i  " },
-        { "Reset to ROM select" },
-        { "Return to %li" },
-};
-
 bool restart = false;
-uint8_t frameskip = gb.direct.frame_skip;
-resolution_t old_resolution;
+enum menu_type_e {
+    NONE,
+    INT,
+    TEXT,
+    ARRAY,
 
-void *menu_values[MENU_ITEMS_NUMBER] = {
-        &frameskip,
-        &manual_palette_selected,
-        &old_resolution,
-        nullptr,
-        (void *) rom_filename,
+    SAVE,
+    LOAD,
+    RESET,
+    RETURN,
 };
+
+typedef struct __attribute__((__packed__)) {
+    const char *text;
+    menu_type_e type;
+    const void *value;
+    uint8_t max_value;
+    char value_list[5][10];
+} MenuItem;
+resolution_t old_resolution;
+#define MENU_ITEMS_NUMBER 9
+#if MENU_ITEMS_NUMBER > TEXTMODE_ROWS
+#error("Too much menu items!")
+#endif
+const MenuItem menu_items[MENU_ITEMS_NUMBER] = {
+        //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+        //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+        { "Resolution scale: %s", ARRAY, &old_resolution,          1, { "4X3", "3X3" }},
+        { "Palette: %i",          INT,   &manual_palette_selected, 12 },
+        { "Show FPS: %s",         ARRAY, &show_fps,                1, { "NO ", "YES" }},
+        {},
+        { "Save state",           SAVE },
+        { "Load state",           LOAD },
+        {},
+        { "Reset to ROM select",  RESET },
+        { "Return to game",       RETURN }
+};
+
+
+void save() {
+    char pathname[255];
+    sprintf(pathname, "GB\\%s.save", "rom_filename");
+    FRESULT fr = f_mount(&fs, "", 1);
+    FIL fd;
+    fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
+    UINT bw;
+
+    f_write(&fd, &gb, sizeof(gb), &bw);
+    f_close(&fd);
+}
+
+void load() {
+    char pathname[255];
+    sprintf(pathname, "GB\\%s.save", "rom_filename");
+    FRESULT fr = f_mount(&fs, "", 1);
+    FIL fd;
+    fr = f_open(&fd, pathname, FA_READ);
+    UINT br;
+
+    f_read(&fd, &gb, sizeof(gb), &br);
+    f_close(&fd);
+}
 
 void menu() {
     bool exit = false;
@@ -670,13 +713,10 @@ void menu() {
     memset(&colors, 0x00, sizeof(colors));
     resolution = RESOLUTION_TEXTMODE;
 
+    char footer[80];
+    sprintf(footer, ":: %s %s build %s %s ::", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING, __DATE__, __TIME__);
+    draw_text(footer, (TEXTMODE_COLS - strlen(footer)) >> 1, 0, 11, 1);
     int current_item = 0;
-    char item[80];
-
-#if ENABLE_SDCARD
-    write_cart_ram_file(&gb);
-    sleep_ms(100);
-#endif
 
     while (!exit) {
 #if USE_PS2_KBD
@@ -689,6 +729,7 @@ void menu() {
 #if USE_NESPAD
         nespad_tick();
 #endif
+
         gamepad_bits.up = keyboard_bits.up && gamepad_bits.up;
         gamepad_bits.down = keyboard_bits.down && gamepad_bits.down;
         gamepad_bits.left = keyboard_bits.left && gamepad_bits.left;
@@ -698,60 +739,19 @@ void menu() {
         gamepad_bits.b = keyboard_bits.b && gamepad_bits.b;
 
         if (!gamepad_bits.down) {
-            if (current_item < MENU_ITEMS_NUMBER - 1) {
+            current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
+            if (menu_items[current_item].type == NONE)
                 current_item++;
-            } else {
-                current_item = 0;
-            }
         }
 
         if (!gamepad_bits.up) {
-            if (current_item > 0) {
+            current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
+            if (menu_items[current_item].type == NONE)
                 current_item--;
-            } else {
-                current_item = MENU_ITEMS_NUMBER - 1;
-            }
-        }
-
-        if (!gamepad_bits.left || !gamepad_bits.right) {
-            switch (current_item) {
-                case 0:  // Frameskip
-                    frameskip = gb.direct.frame_skip = !gb.direct.frame_skip;
-                    break;
-                case 1:  // Palette
-                    if (!gamepad_bits.right) {
-                        manual_palette_selected = (manual_palette_selected + 1) % 13;
-                    } else if (manual_palette_selected > 0) {
-                        manual_palette_selected -= 1;
-                    }
-                    manual_assign_palette(palette16, manual_palette_selected);
-                    for (int i = 0; i < 3; i++)
-                        for (int j = 0; j < 4; j++)
-                            palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
-                    break;
-                case 2:  // Resolution
-                    if (!gamepad_bits.right) {
-                        old_resolution = static_cast<resolution_t>((old_resolution + 1) % 2);
-                    } else if (old_resolution > 0) {
-                        old_resolution = static_cast<resolution_t>((old_resolution - 1));
-                    }
-                    break;
-            }
-        }
-
-        if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
-            switch (current_item) {
-                case MENU_ITEMS_NUMBER - 2:
-                    restart = true;
-                case MENU_ITEMS_NUMBER - 1:
-                    exit = true;
-                    break;
-            }
         }
 
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
-            // TODO: textmode maxy from define
-            uint8_t y = i + ((TEXTMODE_ROWS - MENU_ITEMS_NUMBER) >> 1);
+            uint8_t y = i + 1;
             uint8_t x = 30;
             uint8_t color = 0xFF;
             uint8_t bg_color = 0x00;
@@ -759,19 +759,84 @@ void menu() {
                 color = 0x01;
                 bg_color = 0xFF;
             }
-            if (strstr(menu_items[i], "%s") != nullptr) {
-                sprintf(item, menu_items[i], menu_values[i]);
-            } else {
-                sprintf(item, menu_items[i], *(uint8_t *) menu_values[i]);
+
+            const MenuItem *item = &menu_items[i];
+
+            if (i == current_item) {
+                switch (item->type) {
+                    case INT:
+                    case ARRAY:
+                        if (item->max_value != 0) {
+                            auto *value = (uint8_t *) item->value;
+
+                            if (!(gamepad_bits.right) && *value < item->max_value) {
+                                (*value)++;
+                            }
+
+                            if (!(gamepad_bits.left) && *value > 0) {
+                                (*value)--;
+                            }
+                        }
+                        break;
+                    case SAVE:
+                        if (!gamepad_bits.start) {
+                            save();
+                            exit = true;
+                        }
+                        break;
+                    case LOAD:
+                        if (!gamepad_bits.start) {
+                            load();
+                            exit = true;
+                        }
+                        break;
+                    case RETURN:
+                        if (!gamepad_bits.start) {
+                            exit = true;
+                        }
+                        break;
+                    case RESET:
+                        if (!gamepad_bits.start) {
+                            restart = true;
+                            exit = true;
+                        }
+                        break;
+
+                }
+
             }
-            draw_text(item, x, y, color, bg_color);
+            static char result[80];
+
+            switch (item->type) {
+                case INT:
+                    sprintf(result, item->text, *(uint8_t *) item->value);
+                    break;
+                case ARRAY:
+                    sprintf(result, item->text, item->value_list[*(uint8_t *) item->value]);
+                    break;
+                case TEXT:
+                    sprintf(result, item->text, item->value);
+                    break;
+                default:
+                    sprintf(result, "%s", item->text);
+            }
+
+            draw_text(result, x, y, color, bg_color);
         }
 
         sleep_ms(100);
     }
 
+    if (manual_palette_selected > 0) {
+        manual_assign_palette(palette16, manual_palette_selected);
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 4; j++)
+                palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
+    }
+
     resolution = old_resolution;
 }
+
 
 int main() {
     /* Overclock. */
@@ -857,7 +922,6 @@ int main() {
         resolution = RESOLUTION_3X3;
 
         /* Initialise GB context. */
-        memcpy(rom_bank0, rom, sizeof(rom_bank0));
         enum gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
                                            &gb_cart_ram_write, &gb_error, nullptr);
         putstdio("GB ");
@@ -932,8 +996,7 @@ int main() {
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
-#if SHOW_FPS
-            if (frames == 60) {
+            if (show_fps && frames >= 60) {
                 uint64_t end_time;
                 uint32_t diff;
                 uint8_t fps;
@@ -947,8 +1010,6 @@ int main() {
                 frames = 0;
                 start_time = time_us_64();
             }
-#endif
-
 
         }
         restart = false;
