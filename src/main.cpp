@@ -505,7 +505,7 @@ uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number
     }
 
     uint16_t total_files = 0;
-    result = f_findfirst(&directory, &file, "GB\\", "*");
+    result = f_findfirst(&directory, &file, "GB\\", "*.gb*");
 
     /* skip the first N pages */
     if (page_number > 0) {
