@@ -4120,16 +4120,21 @@ const char* gb_get_rom_name(struct gb_s* gb, char *title_str)
 {
 	uint_fast16_t title_loc = 0x134;
 	/* End of title may be 0x13E for newer games. */
-	const uint_fast16_t title_end = 0x143;
+	//const uint_fast16_t title_end = 0x14в;
 	const char* title_start = title_str;
 
-	for(; title_loc <= title_end; title_loc++)
+	for(; title_loc <= title_loc+ 24; title_loc++)
 	{
 		const char title_char = gb->gb_rom_read(gb, title_loc);
 
 		if(title_char >= ' ' && title_char <= '_')
 		{
-			*title_str = title_char;
+            if(title_char == ' ') {
+                *title_str = '_';
+            } else {
+                *title_str = title_char;
+            }
+
 			title_str++;
 		}
 		else
