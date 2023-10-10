@@ -79,7 +79,7 @@
 const char *rom_filename = (const char *) (XIP_BASE + FLASH_TARGET_OFFSET);
 const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET) + 4096;
 
-static uint8_t __attribute__((aligned(4))) ram[32768];
+static uint8_t ram[32768];
 
 static const sVmode *vmode = nullptr;
 struct semaphore vga_start_semaphore;

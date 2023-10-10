@@ -4126,19 +4126,16 @@ const char* gb_get_rom_name(struct gb_s* gb, char *title_str)
 	for(; title_loc <= title_loc+ 24; title_loc++)
 	{
 		const char title_char = gb->gb_rom_read(gb, title_loc);
+        if (title_char == '\0') break;
 
-		if(title_char >= ' ' && title_char <= '_')
+		if((title_char >= '0' && title_char <= '9') || (title_char >= 'A' && title_char <= 'Z'))
 		{
-            if(title_char == ' ') {
-                *title_str = '_';
-            } else {
                 *title_str = title_char;
-            }
 
-			title_str++;
-		}
-		else
-			break;
+		} else {
+            *title_str = '_';
+        }
+        title_str++;
 	}
 
 	*title_str = '\0';
