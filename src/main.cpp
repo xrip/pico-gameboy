@@ -671,7 +671,7 @@ const MenuItem menu_items[MENU_ITEMS_NUMBER] = {
         //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
         //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
         { "Resolution scale: %s", ARRAY, &old_resolution,          1, { "4X3", "3X3" }},
-        { "Palette: %i",          INT,   &manual_palette_selected, 12 },
+        { "Palette: %i ",          INT,   &manual_palette_selected, 12 },
         { "Show FPS: %s",         ARRAY, &show_fps,                1, { "NO ", "YES" }},
         {},
         { "Save state",           SAVE },
@@ -920,6 +920,7 @@ int main() {
 //while (1) {}
 
     while (true) {
+        manual_palette_selected = 0;
 #if ENABLE_LCD
 #if ENABLE_SDCARD
         /* ROM File selector */
