@@ -85,7 +85,8 @@ static uint8_t ram[32768];
 struct semaphore vga_start_semaphore;
 
 struct gb_s gb;
-
+i2s_config_t i2s_config;
+uint_fast32_t frames = 0;
 enum COLORMODE {
     RGB333,
     RBG222,
@@ -240,7 +241,7 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
             "INVALID WRITE" };
     printf("Error %d occurred: %s at %04X\n.\n", gb_err, gb_err_str[gb_err], addr);
 }
-
+int prev_frame = 0;
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
     initVGA();
@@ -254,6 +255,12 @@ void __time_critical_func(render_core)() {
     setVGA_color_flash_mode(settings.flash_line, settings.flash_frame);
 
     sem_acquire_blocking(&vga_start_semaphore);
+
+    while(1) {
+        while(gb.gb_frame && !gb.gb_halt) { tight_loop_contents(); }
+        audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
+        i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
+    }
 }
 
 #if ENABLE_LCD
@@ -937,7 +944,7 @@ int main() {
     memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
 
     // Initialize I2S sound driver
-    i2s_config_t i2s_config = i2s_get_default_config();
+    i2s_config = i2s_get_default_config();
     i2s_config.sample_freq = AUDIO_SAMPLE_RATE;
     i2s_config.dma_trans_count = AUDIO_SAMPLES;
     i2s_volume(&i2s_config, 0);
@@ -1026,7 +1033,6 @@ int main() {
 #endif
 
         putstdio("\n> ");
-        uint_fast32_t frames = 0;
         uint64_t start_time = time_us_64();
 
 //=============================================================================
@@ -1064,8 +1070,8 @@ int main() {
 
 #if ENABLE_SOUND
             if (!gb.direct.frame_skip) {
-                audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
-                i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
+                //audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
+                ///i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
 #endif
             if (show_fps && frames >= 60) {
