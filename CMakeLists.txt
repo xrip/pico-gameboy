@@ -16,7 +16,7 @@ pico_sdk_init()
 add_subdirectory(drivers/fatfs)
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
-add_subdirectory(drivers/vga)
+add_subdirectory(drivers/vga-nextgen)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
 
@@ -45,7 +45,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE inc ext/minigb_apu)
 target_link_libraries(${PROJECT_NAME}
         audio
 
-        vga
+        vga-nextgen
         ps2kbd
         sdcard
         fatfs

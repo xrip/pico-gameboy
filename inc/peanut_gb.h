@@ -48,6 +48,9 @@
 #include <cstring>	/* Required for memset */
 #include <ctime>	/* Required for tm struct */
 #include <pico/runtime.h>
+extern "C" {
+#include "vga.h"
+}
 /**
 * If PEANUT_GB_IS_LITTLE_ENDIAN is positive, then Peanut-GB will be configured
 * for a little endian platform. If 0, then big endian.
@@ -98,7 +101,7 @@
 
 /* Adds more code to improve LCD rendering accuracy. */
 #ifndef PEANUT_GB_HIGH_LCD_ACCURACY
-# define PEANUT_GB_HIGH_LCD_ACCURACY 0
+# define PEANUT_GB_HIGH_LCD_ACCURACY 1
 #endif
 
 /* Use intrinsic functions. This may produce smaller and faster code. */
@@ -380,23 +383,12 @@
 # define PEANUT_GB_U8_TO_U16(h,l) ((h) | ((l) << 8))
 #endif
 
-uint8_t convertRGB555toRGB222(uint16_t rgb555) {
-    uint8_t rgb222 = 0;
-
-// Extract individual color components from rgb555
+#define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
+uint32_t RGB555_TO_RGB888(uint16_t rgb555) {
     uint8_t r = (rgb555 >> 10) & 0x1F;
     uint8_t g = (rgb555 >> 5) & 0x1F;
     uint8_t b = rgb555 & 0x1F;
-
-// Convert each color component to rgb222
-    uint8_t r222 = (r >> 3) & 0x03;
-    uint8_t g222 = (g >> 3) & 0x03;
-    uint8_t b222 = (b >> 3) & 0x03;
-
-// Combine the converted color components into a single 8-bit value
-    rgb222 = (r222 << 4) | (g222 << 2) | b222;
-
-    return rgb222;
+    return RGB888(r, g, b);
 }
 
 struct cpu_registers_s
@@ -676,7 +668,7 @@ struct gb_s
 		uint16_t wramBankOffset;
 		uint8_t vramBank;
 		uint16_t vramBankOffset;
-		uint8_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
+		uint32_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
 		uint8_t OAMPalette[0x40];
 		uint8_t BGPalette[0x40];
 		uint8_t OAMPaletteID;
@@ -1326,27 +1318,29 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			gb->cgb.BGPaletteInc = val >> 7;
 			return;
 
-		/* CGB BG Palette*/
-		case 0x69:
-			gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
-			fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
-			gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = convertRGB555toRGB222(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-			if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
-			return;
+                /* CGB BG Palette*/
+            case 0x69:
+                gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
+                fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
+                gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+                setVGA_color_palette(((gb->cgb.BGPaletteID & 0x3E) >> 1), RGB888((fixPaletteTemp & 0x7C00) >> 10, (fixPaletteTemp & 0x03E0), (fixPaletteTemp & 0x001F) << 10));
+                if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
+                return;
 
-		/* CGB OAM Palette Index*/
-		case 0x6A:
-			gb->cgb.OAMPaletteID = val & 0x3F;
-			gb->cgb.OAMPaletteInc = val >> 7;
-			return;
+                /* CGB OAM Palette Index*/
+            case 0x6A:
+                gb->cgb.OAMPaletteID = val & 0x3F;
+                gb->cgb.OAMPaletteInc = val >> 7;
+                return;
 
-		/* CGB OAM Palette*/
-		case 0x6B:
-			gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3F)] = val;
-			fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
-			gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = convertRGB555toRGB222(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-			if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
-			return;
+                /* CGB OAM Palette*/
+            case 0x6B:
+                gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3F)] = val;
+                fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
+                gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+                setVGA_color_palette(0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1), RGB888((fixPaletteTemp & 0x7C00) >> 10, (fixPaletteTemp & 0x03E0), (fixPaletteTemp & 0x001F) << 10));
+                if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
+                return;
 
 		/* CGB WRAM Bank*/
 		case 0x70:
