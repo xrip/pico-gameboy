@@ -132,6 +132,7 @@ uint16_t *stream;
 
 #define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
 #define RGB565_TO_RGB888(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
+#define RGB555_TO_RGB888(rgb555) RGB888((rgb555 >> 10) & 0x1F, (rgb555 >> 5) & 0x1F, rgb555 & 0x1F)
 
 typedef uint8_t palette222_t[3][4];
 static palette222_t palette;
@@ -263,8 +264,12 @@ void __time_critical_func(render_core)() {
 void __always_inline lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
     //memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
 //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    for (unsigned int x = 0; x < LCD_WIDTH; x++)
-        SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    if (gb->cgb.cgbMode) {
+        memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
+    } else {
+        for (unsigned int x = 0; x < LCD_WIDTH; x++)
+            SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    }
 }
 
 #endif
@@ -862,6 +867,7 @@ void menu() {
         manual_assign_palette(palette16, manual_palette_selected);
     }
 
+    if (!gb.cgb.cgbMode)
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 4; j++) {
             palette[i][j] = i * 4 + j;
@@ -988,11 +994,10 @@ int main() {
         }
 
 
-        if (gb.cgb.cgbMode) {
 //            for (uint8_t i =0; i<64; i++)
 //            setVGA_color_palette(i, RGB565_TO_RGB888(gb.cgb.fixPalette[i]));
-        } else {
-            for (int i = 0; i < 3; i++)
+        if (!gb.cgb.cgbMode)
+        for (int i = 0; i < 3; i++)
                 for (int j = 0; j < 4; j++) {
                     palette[i][j] = i * 4 + j;
                     uint32_t color = RGB565_TO_RGB888(palette16[i][j]);
@@ -1009,7 +1014,7 @@ int main() {
                         setVGA_color_palette(i * 4 + j, RGB888(r, g, b));
                     }
                 }
-        }
+
 #if ENABLE_LCD
         gb_init_lcd(&gb, &lcd_draw_line);
         putstdio("LCD ");
