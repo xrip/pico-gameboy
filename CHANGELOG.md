@@ -1,3 +1,7 @@
+# v2.2.0a
+
+Toxic palette fix
+
 # v2.2.0
 
 Added ability to save and load gamestate. Better menu system.
