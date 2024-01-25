@@ -16,9 +16,11 @@ pico_sdk_init()
 add_subdirectory(drivers/fatfs)
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
-add_subdirectory(drivers/vga-nextgen)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
+add_subdirectory(drivers/hdmi)
+add_subdirectory(drivers/vga-nextgen)
+add_subdirectory(drivers/st7789)
 
 add_executable(${PROJECT_NAME}
         ext/minigb_apu/minigb_apu.c
@@ -39,13 +41,29 @@ if(OVERCLOCKING)
     message(STATUS "==================================")
     message(STATUS "")
 endif ()
-
+IF(TFT)
+    target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TFT)
+    SET(BUILD_NAME "${BUILD_NAME}-TFT")
+    IF(ILI9341)
+        SET(BUILD_NAME "${BUILD_NAME}-ILI9341")
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ILI9341)
+    ELSE()
+        SET(BUILD_NAME "${BUILD_NAME}-ST7789")
+    ENDIF()
+ELSEIF(HDMI)
+    target_link_libraries(${PROJECT_NAME} PRIVATE hdmi)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI)
+    SET(BUILD_NAME "${BUILD_NAME}-HDMI")
+ELSE()
+    target_link_libraries(${PROJECT_NAME} PRIVATE vga-nextgen)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VGA)
+ENDIF()
 target_include_directories(${PROJECT_NAME} PRIVATE inc ext/minigb_apu)
 
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(${PROJECT_NAME} PRIVATE
         audio
 
-        vga-nextgen
         ps2kbd
         sdcard
         fatfs

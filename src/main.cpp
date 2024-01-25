@@ -49,10 +49,16 @@
 #include "hedley.h"
 #include "peanut_gb.h"
 #include "gbcolors.h"
-
-/* Murmulator board */
 extern "C" {
+#ifdef TFT
+#include "st7789.h"
+#endif
+#ifdef HDMI
+#include "hdmi.h"
+#endif
+#ifdef VGA
 #include "vga.h"
+#endif
 }
 
 #include "f_util.h"
@@ -81,7 +87,10 @@ extern "C" {
 const char *rom_filename = (const char *) (XIP_BASE + FLASH_TARGET_OFFSET);
 const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET) + 4096;
 static uint8_t ram[32768];
+uint8_t CURSOR_X, CURSOR_Y = 0;
 
+bool cursor_blink_state = false;
+uint8_t manager_started = false;
 struct semaphore vga_start_semaphore;
 
 struct gb_s gb;
@@ -131,9 +140,8 @@ static FATFS fs;
 uint16_t *stream;
 #endif
 
-#define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
 #define RGB565_TO_RGB888(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
-#define RGB555_TO_RGB888(rgb555) RGB888((rgb555 >> 10) & 0x1F, (rgb555 >> 5) & 0x1F, rgb555 & 0x1F)
+#define RGB555_TO_RGB565(rgb555) RGB888((rgb555 >> 10) & 0x1F, (rgb555 >> 5) & 0x1F, rgb555 & 0x1F)
 
 typedef uint8_t palette222_t[3][4];
 static palette222_t palette;
@@ -244,23 +252,42 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
 int prev_frame = 0;
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
-    initVGA();
-    auto *buffer = reinterpret_cast<uint8_t *>(&SCREEN[0][0]);
-    setVGAbuf(buffer, LCD_WIDTH, LCD_HEIGHT);
-    uint8_t *text_buf = buffer + 1000;
-    setVGA_text_buf(text_buf, &text_buf[80 * 30]);
-    setVGA_bg_color(0);
-    setVGAbuf_pos(64, 8);
+#if TFT || HDMI
+    multicore_lockout_victim_init();
+#endif
+    graphics_init();
+    auto *buffer = &SCREEN[0][0];
+    graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
+    graphics_set_textbuffer(buffer);
+    graphics_set_bgcolor(0);
+    graphics_set_offset(320-LCD_WIDTH, 0);
 //    updatePalette(settings.palette);
-    setVGA_color_flash_mode(settings.flash_line, settings.flash_frame);
+    graphics_set_flashmode(settings.flash_line, settings.flash_frame);
 
     sem_acquire_blocking(&vga_start_semaphore);
-
-    while(1) {
-        while(gb.gb_frame && !gb.gb_halt) { tight_loop_contents(); }
-        audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
-        i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
+#ifdef TFT
+    // 60 FPS loop
+    uint64_t tick = time_us_64();
+    uint64_t last_renderer_tick = tick;
+    while (true) {
+        if (tick >= last_renderer_tick + 16666) {
+            refresh_lcd();
+            last_renderer_tick = tick;
+        }
+        tick = time_us_64();
+        tight_loop_contents();
     }
+
+    __unreachable();
+#endif
+    while(true) {
+        // while(gb.gb_frame && !gb.gb_halt) { tight_loop_contents(); }
+        //refresh_lcd();
+         audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
+         i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
+        tight_loop_contents();
+    }
+    __unreachable();
 }
 
 #if ENABLE_LCD
@@ -271,6 +298,8 @@ void __time_critical_func(render_core)() {
 void __always_inline lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
     //memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
 //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
+    return;
     if (gb->cgb.cgbMode) {
         memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
     } else {
@@ -372,32 +401,6 @@ int compareFileItems(const void *a, const void *b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-void __inline draw_window(char *title, int x, int y, int width, int height) {
-    char textline[80];
-
-    width--;
-    height--;
-    // Рисуем рамки
-    // ═══
-    memset(textline, 0xCD, width);
-    // ╔ ╗ 188 ╝ 200 ╚
-    textline[0] = 0xC9;
-    textline[width] = 0xBB;
-    draw_text(textline, x, y, 11, 1);
-    draw_text(title, (80 - strlen(title)) >> 1, 0, 0, 3);
-
-    textline[0] = 0xC8;
-    textline[width] = 0xBC;
-    draw_text(textline, x, height - y, 11, 1);
-
-
-    memset(textline, ' ', width);
-    textline[0] = textline[width] = 0xBA;
-    for (int i = 1; i < height; i++) {
-        draw_text(textline, x, i, 11, 1);
-    }
-}
-
 void filebrowser_loadfile(char *pathname) {
     if (strcmp(rom_filename, pathname) == 0) {
         printf("Launching last rom");
@@ -415,6 +418,9 @@ void filebrowser_loadfile(char *pathname) {
 
 
     if (result == FR_OK) {
+#if TFT || HDMI
+        multicore_lockout_start_blocking();
+#endif
         uint32_t interrupts = save_and_disable_interrupts();
 
         // TODO: Save it after success loading to prevent corruptions
@@ -448,16 +454,19 @@ void filebrowser_loadfile(char *pathname) {
         }
 
         f_close(&file);
+#if TFT || HDMI
+        multicore_lockout_end_blocking();
+#endif
         restore_interrupts(interrupts);
     }
 }
 
 void filebrowser(char *path, char *executable) {
-    setVGAmode(VGA640x480_text_80_30);
+    graphics_set_mode(TEXTMODE_80x30);
     bool debounce = true;
     clrScr(1);
     char basepath[255];
-    char tmp[80];
+    char tmp[TEXTMODE_COLS];
     strcpy(basepath, path);
 
     constexpr int per_page = 27;
@@ -479,10 +488,10 @@ void filebrowser(char *path, char *executable) {
         int total_files = 0;
         memset(fileItems, 0, maxfiles * sizeof(FileItem));
 
-        sprintf(tmp, " SDCARD:\\%s ", basepath);
-        draw_window(tmp, 0, 0, 80, 29);
+        snprintf(tmp, TEXTMODE_COLS, " SDCARD:\\%s ", basepath);
+        draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
 
-        memset(tmp, ' ', 80);
+        memset(tmp, ' ', TEXTMODE_COLS);
         draw_text(tmp, 0, 29, 0, 0);
         draw_text("START", 0, 29, 7, 0);
         draw_text(" Run at cursor ", 5, 29, 0, 3);
@@ -537,7 +546,7 @@ void filebrowser(char *path, char *executable) {
         f_closedir(&dir);
 
         if (total_files > 500) {
-            draw_text(" files > 500!!! ", 80 - 17, 0, 12, 3);
+            draw_text(" files > 500!!! ", TEXTMODE_COLS - 17, 0, 12, 3);
         }
 
         uint8_t color, bg_color;
@@ -604,14 +613,14 @@ void filebrowser(char *path, char *executable) {
                             basepath[length] = '\0';
                         }
                     } else {
-                        sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
+                        snprintf(basepath, TEXTMODE_COLS, "%s\\%s", basepath, file_at_cursor.filename);
                     }
                     debounce = false;
                     break;
                 }
 
                 if (file_at_cursor.is_executable) {
-                    sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
+                    snprintf(tmp, TEXTMODE_COLS, "%s\\%s", basepath, file_at_cursor.filename);
                     return filebrowser_loadfile(tmp);
                 }
             }
@@ -624,21 +633,21 @@ void filebrowser(char *path, char *executable) {
                     color = 0;
                     bg_color = 3;
 
-                    memset(tmp, 0xCD, 78);
-                    tmp[78] = '\0';
+                    memset(tmp, 0xCD, TEXTMODE_COLS-2);
+                    tmp[TEXTMODE_COLS-2] = '\0';
                     draw_text(tmp, 1, per_page + 1, 11, 1);
-                    sprintf(tmp, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1, total_files);
-                    draw_text(tmp, (80 - strlen(tmp)) >> 1, per_page + 1, 14, 3);
+                    snprintf(tmp, TEXTMODE_COLS-2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1, total_files);
+                    draw_text(tmp, 2, per_page + 1, 14, 3);
                 }
                 auto len = strlen(item.filename);
                 color = item.is_directory ? 15 : color;
                 color = item.is_executable ? 10 : color;
                 color = strstr(rom_filename, item.filename) != nullptr ? 13 : color;
 
-                memset(tmp, ' ', 78);
-                tmp[78] = '\0';
+                memset(tmp, ' ', TEXTMODE_COLS-2);
+                tmp[TEXTMODE_COLS-2] = '\0';
 
-                memcpy(&tmp, item.filename, len < 78 ? len : 78);
+                memcpy(&tmp, item.filename, len < TEXTMODE_COLS-2 ? len : TEXTMODE_COLS-2);
 
                 draw_text(tmp, 1, i + 1, color, bg_color);
             }
@@ -754,11 +763,15 @@ void save_config() {
 void menu() {
     bool exit = false;
     clrScr(0);
-    setVGAmode(VGA640x480_text_80_30);
+    graphics_set_mode(TEXTMODE_80x30);
 
-    char footer[80];
-    sprintf(footer, ":: %s %s build %s %s ::", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING, __DATE__, __TIME__);
-    draw_text(footer, (sizeof(footer) - strlen(footer)) >> 1, 0, 11, 1);
+    char footer[TEXTMODE_COLS];
+    snprintf(footer, TEXTMODE_COLS, ":: %s ::", PICO_PROGRAM_NAME);
+    draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, 0, 11, 1);
+    snprintf(footer, TEXTMODE_COLS, ":: %s build %s %s ::", PICO_PROGRAM_VERSION_STRING, __DATE__,
+         __TIME__);
+    draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS-1, 11, 1);
+
     int current_item = 0;
 
     while (!exit) {
@@ -794,8 +807,8 @@ void menu() {
         }
 
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
-            uint8_t y = i + 1;
-            uint8_t x = 30;
+            uint8_t y = i + ((TEXTMODE_ROWS - MENU_ITEMS_NUMBER) >> 1);
+            uint8_t x = TEXTMODE_COLS / 2 - 10;
             uint8_t color = 0xFF;
             uint8_t bg_color = 0x00;
             if (current_item == i) {
@@ -848,20 +861,20 @@ void menu() {
                 }
 
             }
-            static char result[80];
+            static char result[TEXTMODE_COLS];
 
             switch (item->type) {
                 case INT:
-                    sprintf(result, item->text, *(uint8_t *) item->value);
+                    snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *) item->value);
                     break;
                 case ARRAY:
-                    sprintf(result, item->text, item->value_list[*(uint8_t *) item->value]);
+                    snprintf(result, TEXTMODE_COLS,  item->text, item->value_list[*(uint8_t *) item->value]);
                     break;
                 case TEXT:
-                    sprintf(result, item->text, item->value);
+                    snprintf(result, TEXTMODE_COLS, item->text, item->value);
                     break;
                 default:
-                    sprintf(result, "%s", item->text);
+                    snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
 
             draw_text(result, x, y, color, bg_color);
@@ -879,7 +892,7 @@ void menu() {
         for (int j = 0; j < 4; j++) {
             palette[i][j] = i * 4 + j;
             if (settings.colormode == RGB333) {
-                setVGA_color_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
+                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
             } else {
                 uint32_t color = RGB565_TO_RGB888(palette16[i][j]);
                 uint8_t r = (color >> (16 + 6)) & 0x3;
@@ -889,13 +902,13 @@ void menu() {
                 r *= 42 * 2;
                 g *= 42 * 2;
                 b *= 42 * 2;
-                setVGA_color_palette(i * 4 + j, RGB888(r, g, b));
+                graphics_set_palette(i * 4 + j, RGB888(r, g, b));
             }
         }
 
     memset(SCREEN, 0, sizeof SCREEN);
-    setVGA_color_flash_mode(settings.flash_line, settings.flash_frame);
-    setVGAmode(VGA640x480div3);
+    graphics_set_flashmode(settings.flash_line, settings.flash_frame);
+    graphics_set_mode(VGA_320x200x256);
     save_config();
 }
 
@@ -917,6 +930,17 @@ int main() {
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
 
+    /* Start Core1, which processes requests to the LCD. */
+    putstdio("CORE1 ");
+
+    sem_init(&vga_start_semaphore, 0, 1);
+    multicore_launch_core1(render_core);
+    sem_release(&vga_start_semaphore);
+
+    /*graphics_set_mode(TEXTMODE_80x30);
+    draw_text("HELLO", 0,0, 14, 1);
+
+    while (1);*/
 #if !NDEBUG
     stdio_init_all();
         sleep_ms(3000);
@@ -952,20 +976,16 @@ int main() {
 #endif
 
 
-    /* Start Core1, which processes requests to the LCD. */
-    putstdio("CORE1 ");
-
-    sem_init(&vga_start_semaphore, 0, 1);
-    multicore_launch_core1(render_core);
-    sem_release(&vga_start_semaphore);
-
 #if ENABLE_SOUND
     // Initialize audio emulation
     audio_init();
 
     putstdio("AUDIO ");
 #endif
-
+    graphics_set_mode(VGA_320x200x256);
+    sleep_ms(100);
+    graphics_set_mode(TEXTMODE_80x30);
+    //sleep_ms(100);
     load_config();
 //while (1) {}
     sleep_ms(50);
@@ -975,12 +995,11 @@ int main() {
 #if ENABLE_SDCARD
         /* ROM File selector */
         clrScr(0);
-        setVGAmode(VGA640x480_text_80_30);
         filebrowser(HOME_DIR, "gb\0|gbc\0");
 
 #endif
 #endif
-        setVGAmode(VGA640x480div3);
+        graphics_set_mode(VGA_320x200x256);
 
         /* Initialise GB context. */
         enum gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
@@ -1009,7 +1028,7 @@ int main() {
                     palette[i][j] = i * 4 + j;
                     uint32_t color = RGB565_TO_RGB888(palette16[i][j]);
                     if (settings.colormode == RGB333) {
-                        setVGA_color_palette(i * 4 + j, color);
+                        graphics_set_palette(i * 4 + j, color);
                     } else {
                         uint8_t r = (color >> (16 + 6)) & 0x3;
                         uint8_t g = (color >> (8 + 6)) & 0x3;
@@ -1018,7 +1037,7 @@ int main() {
                         r *= 42 * 2;
                         g *= 42 * 2;
                         b *= 42 * 2;
-                        setVGA_color_palette(i * 4 + j, RGB888(r, g, b));
+                        graphics_set_palette(i * 4 + j, RGB888(r, g, b));
                     }
                 }
 

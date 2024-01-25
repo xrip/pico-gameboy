@@ -49,8 +49,30 @@
 #include <ctime>	/* Required for tm struct */
 #include <pico/runtime.h>
 extern "C" {
+#ifdef TFT
+#include "st7789.h"
+#endif
+#ifdef HDMI
+#include "hdmi.h"
+#endif
+#ifdef VGA
 #include "vga.h"
+#endif
 }
+	uint16_t RGB555_TO_RGB565(uint16_t gbcColor) {
+		// Extract 5-bit color components
+		uint16_t gbcRed = (gbcColor >> 10) & 0x1F;
+		uint16_t gbcGreen = (gbcColor >> 5) & 0x1F;
+		uint16_t gbcBlue = gbcColor & 0x1F;
+
+		// Expand Green from 5 to 6 bits
+		uint16_t expandedGreen = (gbcGreen << 1);
+
+		// Combine the components to form a 16-bit color
+		uint16_t color16Bit = (gbcRed << 11) | (expandedGreen << 5) | gbcBlue;
+
+		return color16Bit;
+	}
 /**
 * If PEANUT_GB_IS_LITTLE_ENDIAN is positive, then Peanut-GB will be configured
 * for a little endian platform. If 0, then big endian.
@@ -1311,14 +1333,14 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			gb->cgb.BGPaletteInc = val >> 7;
 			return;
 
-                /* CGB BG Palette*/
-            case 0x69:
-                gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
-                fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
-                gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-                setVGA_color_palette(((gb->cgb.BGPaletteID & 0x3E) >> 1), ((fixPaletteTemp & 0x7C00) >> 10, (fixPaletteTemp & 0x03E0), (fixPaletteTemp & 0x001F) << 10));
-                if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
-                return;
+			/* CGB BG Palette*/
+			case 0x69:
+				gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
+			fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
+			gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+			graphics_set_palette(((gb->cgb.BGPaletteID & 0x3E) >> 1), RGB555_TO_RGB565(gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)]));
+			if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
+			return;
 
                 /* CGB OAM Palette Index*/
             case 0x6A:
@@ -1326,14 +1348,14 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
                 gb->cgb.OAMPaletteInc = val >> 7;
                 return;
 
-                /* CGB OAM Palette*/
-            case 0x6B:
-                gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3F)] = val;
-                fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
-                gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-                setVGA_color_palette(0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1), ((fixPaletteTemp & 0x7C00) >> 10, (fixPaletteTemp & 0x03E0), (fixPaletteTemp & 0x001F) << 10));
-                if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
-                return;
+			/* CGB OAM Palette*/
+			case 0x6B:
+				gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3F)] = val;
+			fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
+			gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = (((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+			graphics_set_palette(0x20 + ((gb->cgb.BGPaletteID & 0x3E) >> 1), RGB555_TO_RGB565(gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)]));
+			if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
+			return;
 
 		/* CGB WRAM Bank*/
 		case 0x70:
