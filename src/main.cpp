@@ -38,12 +38,9 @@
 #include <pico/multicore.h>
 #include <sys/unistd.h>
 
-#if ENABLE_SOUND
 
 #include "audio.h"
 #include "minigb_apu.h"
-
-#endif
 
 /* Project headers */
 #include "hedley.h"
@@ -51,52 +48,35 @@
 #include "gbcolors.h"
 
 /* Murmulator board */
-#include "vga.h"
+#include "graphics.h"
 #include "f_util.h"
 #include "ff.h"
 
 
-#if USE_NESPAD
-
 #include "nespad.h"
-
-#endif
-
-#if USE_PS2_KBD
 
 #include "ps2kbd_mrmltr.h"
 
-#endif
-
-#include "VGA_ROM_F16.h"
 
 /** Definition of ROM data
  * We're going to erase and reprogram a region 1Mb from the start of the flash
  * Once done, we can access this at XIP_BASE + 1Mb.
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
+#define HOME_DIR (char*)"\\GB"
 #define FLASH_TARGET_OFFSET (1024 * 1024)
-const char *rom_filename = (const char *) (XIP_BASE + FLASH_TARGET_OFFSET);
-const uint8_t *rom = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET) + 4096;
+const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
 
 static uint8_t ram[32768];
 
-static const sVmode *vmode = nullptr;
-struct semaphore vga_start_semaphore;
+semaphore vga_start_semaphore;
 
-struct gb_s gb;
+gb_s gb;
 
 uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
-#define TEXTMODE_ROWS 10
-#define TEXTMODE_COLS 80
-char textmode[TEXTMODE_ROWS][TEXTMODE_COLS];
-uint8_t colors[TEXTMODE_ROWS][TEXTMODE_COLS];
-bool show_fps = false;
 static FATFS fs;
 
-#if ENABLE_SOUND
-uint16_t *stream;
-#endif
+uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 
 #define X2(a) (a | (a << 8))
 #define X4(a) (a | (a << 8) | (a << 16) | (a << 24))
@@ -126,42 +106,27 @@ struct input_bits_t {
     bool down: true;
 };
 
-static input_bits_t keyboard_bits = { true, true, true, true, true, true, true, true };    //Keyboard
-static input_bits_t gamepad_bits = { true, true, true, true, true, true, true, true };      //Joypad
+static input_bits_t keyboard_bits = { false, false, false, false, false, false, false, false }; //Keyboard
+static input_bits_t gamepad_bits = { false, false, false, false, false, false, false, false }; //Joypad
 //-----------------------------------------------------------------------------
-#if USE_NESPAD
 
 void nespad_tick() {
     nespad_read();
 
-    gamepad_bits.a = !(nespad_state & DPAD_A);
-    gamepad_bits.b = !(nespad_state & DPAD_B);
-    gamepad_bits.select = !(nespad_state & DPAD_SELECT);
-    gamepad_bits.start = !(nespad_state & DPAD_START);
-    gamepad_bits.up = !(nespad_state & DPAD_UP);
-    gamepad_bits.down = !(nespad_state & DPAD_DOWN);
-    gamepad_bits.left = !(nespad_state & DPAD_LEFT);
-    gamepad_bits.right = !(nespad_state & DPAD_RIGHT);
-//-----------------------------------------------------------------------------
+    gamepad_bits.a = (nespad_state & DPAD_A) != 0;
+    gamepad_bits.b = (nespad_state & DPAD_B) != 0;
+    gamepad_bits.select = (nespad_state & DPAD_SELECT) != 0;
+    gamepad_bits.start = (nespad_state & DPAD_START) != 0;
+    gamepad_bits.up = (nespad_state & DPAD_UP) != 0;
+    gamepad_bits.down = (nespad_state & DPAD_DOWN) != 0;
+    gamepad_bits.left = (nespad_state & DPAD_LEFT) != 0;
+    gamepad_bits.right = (nespad_state & DPAD_RIGHT) != 0;
 }
 
-#endif
 //-----------------------------------------------------------------------------
 
 
-void draw_text(char *string, uint8_t x, uint8_t y, uint8_t color, uint8_t bgcolor) {
-    uint8_t len = strlen(string);
-    len = len < 80 ? len : 80;
-    memcpy(&textmode[y][x], string, len);
-    memset(&colors[y][x], (color << 4) | (bgcolor & 0xF), len);
-}
-
-
-#define putstdio(x) write(1, x, strlen(x))
-
-#if USE_PS2_KBD
-
-static bool isInReport(hid_keyboard_report_t const *report, const unsigned char keycode) {
+static bool isInReport(hid_keyboard_report_t const* report, const unsigned char keycode) {
     for (unsigned char i: report->keycode) {
         if (i == keycode) {
             return true;
@@ -171,191 +136,124 @@ static bool isInReport(hid_keyboard_report_t const *report, const unsigned char 
 }
 
 void
-__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report) {
-/*    printf("HID key report modifiers %2.2X report ", report->modifier);
-    for (unsigned char i: report->keycode)
-        printf("%2.2X", i);
-    printf("\r\n");*/
+__not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
+    /*    printf("HID key report modifiers %2.2X report ", report->modifier);
+        for (unsigned char i: report->keycode)
+            printf("%2.2X", i);
+        printf("\r\n");*/
 
-    keyboard_bits.start = !isInReport(report, HID_KEY_ENTER);
-    keyboard_bits.select = !isInReport(report, HID_KEY_BACKSPACE);
-    keyboard_bits.a = !isInReport(report, HID_KEY_Z);
-    keyboard_bits.b = !isInReport(report, HID_KEY_X);
-    keyboard_bits.up = !isInReport(report, HID_KEY_ARROW_UP);
-    keyboard_bits.down = !isInReport(report, HID_KEY_ARROW_DOWN);
-    keyboard_bits.left = !isInReport(report, HID_KEY_ARROW_LEFT);
-    keyboard_bits.right = !isInReport(report, HID_KEY_ARROW_RIGHT);
+    keyboard_bits.start = isInReport(report, HID_KEY_ENTER);
+    keyboard_bits.select = isInReport(report, HID_KEY_BACKSPACE);
+    keyboard_bits.a = isInReport(report, HID_KEY_Z);
+    keyboard_bits.b = isInReport(report, HID_KEY_X);
+    keyboard_bits.up = isInReport(report, HID_KEY_ARROW_UP);
+    keyboard_bits.down = isInReport(report, HID_KEY_ARROW_DOWN);
+    keyboard_bits.left = isInReport(report, HID_KEY_ARROW_LEFT);
+    keyboard_bits.right = isInReport(report, HID_KEY_ARROW_RIGHT);
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
-        pio1,
-        0,
-        process_kbd_report);
-#endif
+    pio1,
+    0,
+    process_kbd_report);
 
 /**
  * Returns a byte from the ROM file at the given address.
  */
-uint8_t __not_in_flash_func(gb_rom_read)(struct gb_s *gb, const uint_fast32_t addr) {
+uint8_t __not_in_flash_func(gb_rom_read)(struct gb_s* gb, const uint_fast32_t addr) {
     return rom[addr];
 }
 
 /**
  * Returns a byte from the cartridge RAM at the given address.
  */
-uint8_t __not_in_flash_func(gb_cart_ram_read)(struct gb_s *gb, const uint_fast32_t addr) {
+uint8_t __not_in_flash_func(gb_cart_ram_read)(struct gb_s* gb, const uint_fast32_t addr) {
     return ram[addr];
 }
 
 /**
  * Writes a given byte to the cartridge RAM at the given address.
  */
-void __not_in_flash_func(gb_cart_ram_write)(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val) {
+void __not_in_flash_func(gb_cart_ram_write)(struct gb_s* gb, const uint_fast32_t addr, const uint8_t val) {
     ram[addr] = val;
 }
 
 /**
  * Ignore all errors.
  */
-void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr) {
-    const char *gb_err_str[4] = {
-            "UNKNOWN",
-            "INVALID OPCODE",
-            "INVALID READ",
-            "INVALID WRITE" };
+void gb_error(struct gb_s* gb, const enum gb_error_e gb_err, const uint16_t addr) {
+    const char* gb_err_str[4] = {
+        "UNKNOWN",
+        "INVALID OPCODE",
+        "INVALID READ",
+        "INVALID WRITE"
+    };
     printf("Error %d occurred: %s at %04X\n.\n", gb_err, gb_err_str[gb_err], addr);
 }
 
-typedef enum {
-    RESOLUTION_4X3,
-    RESOLUTION_3X3,
-    RESOLUTION_TEXTMODE,
-} resolution_t;
-resolution_t resolution = RESOLUTION_TEXTMODE;
-
 /* Renderer loop on Pico's second core */
-void __time_critical_func(render_loop)() {
-    multicore_lockout_victim_init();
-    VgaLineBuf *linebuf;
-    printf("Video on Core#%i running...\n", get_core_num());
+void __time_critical_func(render_core)() {
+    // multicore_lockout_victim_init();
+    graphics_init();
+
+    auto* buffer = &SCREEN[0][0];
+    graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
+    graphics_set_textbuffer(buffer);
+    graphics_set_bgcolor(0x000000);
+    graphics_set_offset(0, 0);
+    graphics_set_flashmode(true, true);
+    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    sleep_ms(500);
+    // clrScr(1);
 
     sem_acquire_blocking(&vga_start_semaphore);
-    VgaInit(vmode, 640, 480);
-    uint_fast8_t pixel;
-    uint_fast8_t color;
-    uint32_t y;
-    while (linebuf = get_vga_line()) {
-        y = linebuf->row;
 
-        switch (resolution) {
-            case RESOLUTION_3X3:
-                if (y >= 8 && y < (8 + LCD_HEIGHT)) {
-                    for (uint_fast8_t x = 0; x < LCD_WIDTH; x++) {
-                        uint16_t x3 = 80 + (x << 1) + x;
-                        pixel = SCREEN[y - 8][x];
-
-                        if (gb.cgb.cgbMode) {  // CGB
-                            color = gb.cgb.fixPalette[pixel];
-                        } else {
-                            color = palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3];
-                        }
-
-                        linebuf->line[x3] = color;
-                        linebuf->line[x3 + 1] = color;
-                        linebuf->line[x3 + 2] = color;
-                    }
-                } else {
-                    memset(linebuf->line, 0, 640);
-                }
-                // SHOW FPS
-                if (show_fps && y < 16) {
-                    for (uint_fast8_t x = 77; x < 80; x++) {
-                        uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
-
-                        for (uint_fast8_t bit = 0; bit < 8; bit++) {
-                            if (CHECK_BIT(glyph_row, bit)) {
-                                // FOREGROUND
-                                linebuf->line[8 * x + bit] = 11;
-                            } else {
-                                // BACKGROUND
-                                linebuf->line[8 * x + bit] = 0;
-                            }
-                        }
-                    }
-                }
-                break;
-            case RESOLUTION_4X3:
-                if (y >= 8 && y < (8 + LCD_HEIGHT)) {
-                    for (uint_fast8_t x = 0; x < LCD_WIDTH * 4; x += 4) {
-
-                        pixel = SCREEN[(y - 8)][x / 4];
-                        if (gb.cgb.cgbMode) {  // CGB
-                            (uint32_t &) linebuf->line[x] = X4(gb.cgb.fixPalette[pixel]);
-                        } else {
-                            (uint32_t &) linebuf->line[x] = X4(palette[(pixel & LCD_PALETTE_ALL) >> 4][pixel & 3]);
-                        }
-
-                    }
-                } else {
-                    memset(linebuf->line, 0, 640);
-                }
-                // SHOW FPS
-                if (show_fps && y < 16) {
-                    for (uint_fast8_t x = 77; x < 80; x++) {
-                        uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
-
-                        for (uint_fast8_t bit = 0; bit < 8; bit++) {
-                            if (CHECK_BIT(glyph_row, bit)) {
-                                // FOREGROUND
-                                linebuf->line[8 * x + bit] = 11;
-                            }
-                        }
-                    }
-                }
-                break;
-
-            case RESOLUTION_TEXTMODE:
-                for (uint_fast8_t x = 0; x < 80; x++) {
-                    uint8_t glyph_row = VGA_ROM_F16[(textmode[y / 16][x] * 16) + y % 16];
-                    color = colors[y / 16][x];
-
-                    for (uint_fast8_t bit = 0; bit < 8; bit++) {
-                        if (CHECK_BIT(glyph_row, bit)) {
-                            // FOREGROUND
-                            linebuf->line[8 * x + bit] = (color >> 4) & 0xF;
-                        } else {
-                            // BACKGROUND
-                            linebuf->line[8 * x + bit] = color & 0xF;
-                        }
-                    }
-                }
-                break;
+    // 60 FPS loop
+#define frame_tick (16666)
+    uint64_t tick = time_us_64();
+#ifdef TFT
+    uint64_t last_renderer_tick = tick;
+#endif
+    uint64_t last_input_tick = tick;
+    while (true) {
+#ifdef TFT
+        if (tick >= last_renderer_tick + frame_tick) {
+            refresh_lcd();
+            last_renderer_tick = tick;
         }
+#endif
+        if (tick >= last_input_tick + frame_tick * 1) {
+            ps2kbd.tick();
+            nespad_tick();
+            last_input_tick = tick;
+        }
+        tick = time_us_64();
+
+
+        // tuh_task();
+        //hid_app_task();
+        tight_loop_contents();
     }
 
-    HEDLEY_UNREACHABLE();
+    __unreachable();
 }
 
-#if ENABLE_LCD
 
 /**
  * Draws scanline into framebuffer.
  */
-void __always_inline lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    memcpy((uint32_t *) SCREEN[y], (uint32_t *) pixels, 160);
-//         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    //for (unsigned int x = 0; x < LCD_WIDTH; x++)
-//        screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
+    memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+    //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    // for (unsigned int x = 0; x < LCD_WIDTH; x++)
+    // SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
 }
 
-#endif
-
-#if ENABLE_SDCARD
 
 /**
  * Load a save file from the SD card
  */
-void read_cart_ram_file(struct gb_s *gb) {
+void read_cart_ram_file(struct gb_s* gb) {
     char filename[16];
     uint_fast32_t save_size;
     UINT br;
@@ -363,7 +261,6 @@ void read_cart_ram_file(struct gb_s *gb) {
     gb_get_rom_name(gb, filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
-
         FRESULT fr = f_mount(&fs, "", 1);
         if (FR_OK != fr) {
             printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
@@ -374,7 +271,8 @@ void read_cart_ram_file(struct gb_s *gb) {
         fr = f_open(&fil, filename, FA_READ);
         if (fr == FR_OK) {
             f_read(&fil, ram, f_size(&fil), &br);
-        } else {
+        }
+        else {
             printf("E f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
         }
 
@@ -389,7 +287,7 @@ void read_cart_ram_file(struct gb_s *gb) {
 /**
  * Write a save file to the SD card
  */
-void write_cart_ram_file(struct gb_s *gb) {
+void write_cart_ram_file(struct gb_s* gb) {
     char filename[16];
     uint_fast32_t save_size;
     UINT bw;
@@ -397,7 +295,6 @@ void write_cart_ram_file(struct gb_s *gb) {
     gb_get_rom_name(gb, filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
-
         FRESULT fr = f_mount(&fs, "", 1);
         if (FR_OK != fr) {
             printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
@@ -408,7 +305,8 @@ void write_cart_ram_file(struct gb_s *gb) {
         fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
         if (fr == FR_OK) {
             f_write(&fil, ram, save_size, &bw);
-        } else {
+        }
+        else {
             printf("E f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
         }
 
@@ -420,32 +318,110 @@ void write_cart_ram_file(struct gb_s *gb) {
     printf("I write_cart_ram_file(%s) COMPLETE (%u bytes)\n", filename, save_size);
 }
 
-void fileselector_load(char *pathname) {
-    if (strcmp(rom_filename, pathname) == 0) {
-        printf("Launching last rom");
-        return;
+
+typedef struct __attribute__((__packed__)) {
+    bool is_directory;
+    bool is_executable;
+    size_t size;
+    char filename[79];
+} file_item_t;
+
+constexpr int max_files = 500;
+static file_item_t fileItems[max_files];
+
+int compareFileItems(const void* a, const void* b) {
+    const auto* itemA = (file_item_t *)a;
+    const auto* itemB = (file_item_t *)b;
+    // Directories come first
+    if (itemA->is_directory && !itemB->is_directory)
+        return -1;
+    if (!itemA->is_directory && itemB->is_directory)
+        return 1;
+    // Sort files alphabetically
+    return strcmp(itemA->filename, itemB->filename);
+}
+
+static inline bool isExecutable(const char pathname[256], const char* extensions) {
+    const char* extension = strrchr(pathname, '.');
+    if (extension == nullptr) {
+        return false;
+    }
+    extension++; // Move past the '.' character
+
+    const char* token = strtok((char *)extensions, "|"); // Tokenize the extensions string using '|'
+
+    while (token != nullptr) {
+        if (strcmp(extension, token) == 0) {
+            return true;
+        }
+        token = strtok(NULL, "|");
     }
 
+    return false;
+}
+
+bool __time_critical_func(filebrowser_load) (const char pathname[256]) {
+    UINT bytes_read = 0;
+    FIL file;
+
+    constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
+    constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
+
+    draw_window("Loading firmware", window_x, window_y, 43, 5);
+
+    FILINFO fileinfo;
+    f_stat(pathname, &fileinfo);
+
+    if (16384 - 64 << 10 < fileinfo.fsize / 2) {
+        draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(5000);
+        return false;
+    }
+
+    draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
+    sleep_ms(500);
+    multicore_lockout_start_blocking();
+    if (FR_OK == f_open(&file, pathname, FA_READ)) {
+        auto flash_target_offset = FLASH_TARGET_OFFSET;
+
+        uint8_t buffer[FLASH_SECTOR_SIZE];
+
+        do {
+            f_read(&file, &buffer, FLASH_SECTOR_SIZE, &bytes_read);
+
+            if (bytes_read) {
+                const uint32_t ints = save_and_disable_interrupts();
+                flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
+                flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                restore_interrupts(ints);
+
+                gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
+
+                flash_target_offset += FLASH_SECTOR_SIZE;
+            }
+        }
+        while (bytes_read != 0);
+
+        gpio_put(PICO_DEFAULT_LED_PIN, true);
+    }
+    f_close(&file);
+    multicore_lockout_end_blocking();
+    return true;
+}
+
+
+void filebrowser_loadfile(char *filename) {
     FIL fil;
     FRESULT fr;
 
-    size_t bufsize = sizeof(ram);
-    BYTE *buffer = (BYTE *) ram;
+    uint8_t buffer[32768];
+    size_t bufsize = 32768;
+    //BYTE *buffer = (BYTE *) SCREEN;
     auto ofs = FLASH_TARGET_OFFSET;
-    printf("Writing %s rom to flash %x\r\n", pathname, ofs);
-    fr = f_open(&fil, pathname, FA_READ);
+    fr = f_open(&fil, filename, FA_READ);
 
     UINT bytesRead;
     if (fr == FR_OK) {
-        uint32_t ints = save_and_disable_interrupts();
-        multicore_lockout_start_blocking();
-
-        // TODO: Save it after success loading to prevent corruptions
-        printf("Flashing %d bytes to flash address %x\r\n", 256, ofs);
-        flash_range_erase(ofs, 4096);
-        flash_range_program(ofs, reinterpret_cast<const uint8_t *>(pathname), 256);
-
-        ofs += 4096;
         for (;;) {
             gpio_put(PICO_DEFAULT_LED_PIN, true);
             fr = f_read(&fil, buffer, bufsize, &bytesRead);
@@ -454,15 +430,13 @@ void fileselector_load(char *pathname) {
                     break;
                 }
 
-                printf("Flashing %d bytes to flash address %x\r\n", bytesRead, ofs);
-
-                printf("Erasing...");
                 gpio_put(PICO_DEFAULT_LED_PIN, false);
                 // Disable interupts, erase, flash and enable interrupts
-                flash_range_erase(ofs, bufsize);
-                printf("  -> Flashing...\r\n");
-                flash_range_program(ofs, buffer, bufsize);
+                uint32_t ints = save_and_disable_interrupts();
 
+                flash_range_erase(ofs, bufsize);
+                flash_range_program(ofs, buffer, bufsize);
+                restore_interrupts(ints);
                 ofs += bufsize;
             } else {
                 printf("Error reading rom: %d\n", fr);
@@ -472,177 +446,191 @@ void fileselector_load(char *pathname) {
 
 
         f_close(&fil);
-        restore_interrupts(ints);
-        multicore_lockout_end_blocking();
     }
 }
 
-/**
- * Function used by the rom file selector to display one page of .gb rom files
- */
-uint16_t fileselector_display_page(char filenames[28][256], uint16_t page_number) {
-#define ROWS (TEXTMODE_ROWS-1)
-    // Dirty screen cleanup
-    memset(&textmode, 0x00, sizeof(textmode));
-    memset(&colors, 0x00, sizeof(colors));
-    char footer[80];
-    sprintf(footer, "=================== PAGE #%i -> NEXT PAGE / <- PREV. PAGE ====================", page_number);
-    draw_text(footer, 0, ROWS, 3, 11);
+void filebrowser(const char pathname[256], const char* executables) {
+    bool debounce = true;
+    char basepath[256];
+    char tmp[TEXTMODE_COLS + 1];
+    strcpy(basepath, pathname);
+    constexpr int per_page = TEXTMODE_ROWS - 3;
 
-    DIR directory;
-    FILINFO file;
-    FRESULT result;
+    DIR dir;
+    FILINFO fileInfo;
 
-    result = f_mount(&fs, "", 1);
-    if (FR_OK != result) {
-        printf("E f_mount error: %s (%d)\n", FRESULT_str(result), result);
-        return 0;
+    if (FR_OK != f_mount(&fs, "SD", 1)) {
+        draw_text("SD Card not inserted or SD Card error!", 0, 0, 12, 0);
+        while (true);
     }
 
-    /* clear the filenames array */
-    for (uint8_t ifile = 0; ifile < ROWS; ifile++) {
-        strcpy(filenames[ifile], "");
+    memset(fileItems, 0, sizeof(file_item_t) * max_files);
+    int total_files = 0;
+
+    snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
+    draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+    memset(tmp, ' ', TEXTMODE_COLS);
+
+#ifndef TFT
+    draw_text(tmp, 0, 29, 0, 0);
+    auto off = 0;
+    draw_text("START", off, 29, 7, 0);
+    off += 5;
+    draw_text(" Run at cursor ", off, 29, 0, 3);
+    off += 16;
+    draw_text("SELECT", off, 29, 7, 0);
+    off += 6;
+    draw_text(" Run previous  ", off, 29, 0, 3);
+    off += 16;
+    draw_text("ARROWS", off, 29, 7, 0);
+    off += 6;
+    draw_text(" Navigation    ", off, 29, 0, 3);
+    off += 16;
+    draw_text("A/F10", off, 29, 7, 0);
+    off += 5;
+    draw_text(" USB DRV ", off, 29, 0, 3);
+#endif
+
+    if (FR_OK != f_opendir(&dir, basepath)) {
+        draw_text("Failed to open directory", 1, 1, 4, 0);
+        while (true);
     }
 
-    uint16_t total_files = 0;
-    result = f_findfirst(&directory, &file, "GB\\", "*.gb*");
-
-    /* skip the first N pages */
-    if (page_number > 0) {
-        while (total_files < page_number * ROWS && result == FR_OK && file.fname[0]) {
-            total_files++;
-            result = f_findnext(&directory, &file);
-        }
-    }
-
-    /* store the filenames of this page */
-    total_files = 0;
-    while (total_files < ROWS && result == FR_OK && file.fname[0]) {
-        strcpy(filenames[total_files], file.fname);
+    if (strlen(basepath) > 0) {
+        strcpy(fileItems[total_files].filename, "..\0");
+        fileItems[total_files].is_directory = true;
+        fileItems[total_files].size = 0;
         total_files++;
-        result = f_findnext(&directory, &file);
     }
-    f_closedir(&directory);
 
-    for (uint8_t ifile = 0; ifile < total_files; ifile++) {
-        char pathname[255];
-        uint8_t color = 0x0d;
-        sprintf(pathname, "GB\\%s", filenames[ifile]);
-
-        if (strcmp(pathname, rom_filename) != 0) {
-            color = 0xFF;
-        }
-        draw_text(filenames[ifile], 0, ifile, color, 0x00);
+    while (f_readdir(&dir, &fileInfo) == FR_OK &&
+           fileInfo.fname[0] != '\0' &&
+           total_files < max_files
+    ) {
+        // Set the file item properties
+        fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
+        fileItems[total_files].size = fileInfo.fsize;
+        fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
+        strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
+        total_files++;
     }
-    return total_files;
-}
+    f_closedir(&dir);
 
-/**
- * The ROM selector displays pages of up to 22 rom files
- * allowing the user to select which rom file to start
- * Copy your *.gb rom files to the root directory of the SD card
- */
-void fileselector() {
-    uint16_t num_page = 0;
-    char filenames[30][256];
+    qsort(fileItems, total_files, sizeof(file_item_t), compareFileItems);
 
-    printf("Selecting ROM\r\n");
+    if (total_files > max_files) {
+        draw_text(" Too many files!! ", TEXTMODE_COLS - 17, 0, 12, 3);
+    }
 
-    /* display the first page with up to 22 rom files */
-    uint16_t numfiles = fileselector_display_page(filenames, num_page);
-
-    /* select the first rom */
-    uint8_t current_file = 0;
-    uint8_t color = 0xFF;
-    draw_text(filenames[current_file], 0, current_file, 0xFF, 0xF8);
+    int offset = 0;
+    int current_item = 0;
 
     while (true) {
-        char pathname[255];
-        sprintf(pathname, "GB\\%s", filenames[current_file]);
+        sleep_ms(100);
 
-        if (strcmp(pathname, rom_filename) != 0) {
-            color = 0xFF;
-        } else {
-            color = 0x0d;
+        if (!debounce) {
+            debounce = !(nespad_state & DPAD_START) && !keyboard_bits.start;
         }
-#if USE_PS2_KBD
-        ps2kbd.tick();
-#endif
 
-#if USE_NESPAD
-        nespad_tick();
-#endif
-        sleep_ms(33);
-#if USE_NESPAD
-        nespad_tick();
-#endif
-//-----------------------------------------------------------------------------
-        gamepad_bits.up = keyboard_bits.up && gamepad_bits.up;
-        gamepad_bits.down = keyboard_bits.down && gamepad_bits.down;
-        gamepad_bits.left = keyboard_bits.left && gamepad_bits.left;
-        gamepad_bits.right = keyboard_bits.right && gamepad_bits.right;
-        gamepad_bits.a = keyboard_bits.a && gamepad_bits.a;
-        gamepad_bits.b = keyboard_bits.b && gamepad_bits.b;
-        gamepad_bits.select = keyboard_bits.select && gamepad_bits.select;
-        gamepad_bits.start = keyboard_bits.start && gamepad_bits.start;
-//-----------------------------------------------------------------------------
-        if (!gamepad_bits.select) {
-            break;
+        // ESCAPE
+        if (nespad_state & DPAD_SELECT || keyboard_bits.select) {
+            return;
         }
-        if (!gamepad_bits.start || !gamepad_bits.a || !gamepad_bits.b) {
-            /* copy the rom from the SD card to flash and start the game */
-            fileselector_load(pathname);
-            break;
-        }
-        if (!gamepad_bits.down) {
-            /* select the next rom */
-            draw_text(filenames[current_file], 0, current_file, color, 0x00);
-            current_file++;
-            if (current_file >= numfiles)
-                current_file = 0;
-            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
-            sleep_ms(150);
-        }
-        if (!gamepad_bits.up) {
-            /* select the previous rom */
-            draw_text(filenames[current_file], 0, current_file, color, 0x00);
-            if (current_file == 0) {
-                current_file = numfiles - 1;
-            } else {
-                current_file--;
+
+        if (nespad_state & DPAD_DOWN || keyboard_bits.down) {
+            if (offset + (current_item + 1) < total_files) {
+                if (current_item + 1 < per_page) {
+                    current_item++;
+                }
+                else {
+                    offset++;
+                }
             }
-            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
-            sleep_ms(150);
         }
-        if (!gamepad_bits.right) {
-            /* select the next page */
-            num_page++;
-            numfiles = fileselector_display_page(filenames, num_page);
-            if (numfiles == 0) {
-                /* no files in this page, go to the previous page */
-                num_page--;
-                numfiles = fileselector_display_page(filenames, num_page);
+
+        if (nespad_state & DPAD_UP || keyboard_bits.up) {
+            if (current_item > 0) {
+                current_item--;
             }
-            /* select the first file */
-            current_file = 0;
-            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
-            sleep_ms(150);
+            else if (offset > 0) {
+                offset--;
+            }
         }
-        if ((!gamepad_bits.left) && num_page > 0) {
-            /* select the previous page */
-            num_page--;
-            numfiles = fileselector_display_page(filenames, num_page);
-            /* select the first file */
-            current_file = 0;
-            draw_text(filenames[current_file], 0, current_file, color, 0xF8);
-            sleep_ms(150);
+
+        if (nespad_state & DPAD_RIGHT || keyboard_bits.right) {
+            offset += per_page;
+            if (offset + (current_item + 1) > total_files) {
+                offset = total_files - (current_item + 1);
+            }
         }
-        tight_loop_contents();
+
+        if (nespad_state & DPAD_LEFT || keyboard_bits.left) {
+            if (offset > per_page) {
+                offset -= per_page;
+            }
+            else {
+                offset = 0;
+                current_item = 0;
+            }
+        }
+
+        if (debounce && (nespad_state & DPAD_START || keyboard_bits.start)) {
+            auto file_at_cursor = fileItems[offset + current_item];
+
+            if (file_at_cursor.is_directory) {
+                if (strcmp(file_at_cursor.filename, "..") == 0) {
+                    const char* lastBackslash = strrchr(basepath, '\\');
+                    if (lastBackslash != nullptr) {
+                        const size_t length = lastBackslash - basepath;
+                        basepath[length] = '\0';
+                    }
+                }
+                else {
+                    sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
+                }
+                debounce = false;
+                break;
+            }
+
+            if (file_at_cursor.is_executable) {
+                sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
+
+                filebrowser_loadfile(tmp);
+                return;
+            }
+        }
+
+        for (int i = 0; i < per_page; i++) {
+            const auto item = fileItems[offset + i];
+            uint8_t color = 11;
+            uint8_t bg_color = 1;
+
+            if (i == current_item) {
+                color = 0;
+                bg_color = 3;
+                memset(tmp, 0xCD, TEXTMODE_COLS - 2);
+                tmp[TEXTMODE_COLS - 2] = '\0';
+                draw_text(tmp, 1, per_page + 1, 11, 1);
+                snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1,
+                         total_files);
+                draw_text(tmp, 2, per_page + 1, 14, 3);
+            }
+
+            const auto len = strlen(item.filename);
+            color = item.is_directory ? 15 : color;
+            color = item.is_executable ? 10 : color;
+            //color = strstr((char *)rom_filename, item.filename) != nullptr ? 13 : color;
+            memset(tmp, ' ', TEXTMODE_COLS - 2);
+            tmp[TEXTMODE_COLS - 2] = '\0';
+            memcpy(&tmp, item.filename, len < TEXTMODE_COLS - 2 ? len : TEXTMODE_COLS - 2);
+            draw_text(tmp, 1, i + 1, color, bg_color);
+        }
     }
 }
 
-#endif
+
 bool restart = false;
+
 enum menu_type_e {
     NONE,
     INT,
@@ -651,36 +639,30 @@ enum menu_type_e {
 
     SAVE,
     LOAD,
-    RESET,
+    ROM_SELECT,
     RETURN,
 };
 
 typedef struct __attribute__((__packed__)) {
-    const char *text;
+    const char* text;
     menu_type_e type;
-    const void *value;
+    const void* value;
     uint8_t max_value;
     char value_list[5][10];
 } MenuItem;
-resolution_t old_resolution;
-#define MENU_ITEMS_NUMBER 9
-#if MENU_ITEMS_NUMBER > TEXTMODE_ROWS
-#error("Too much menu items!")
-#endif
-const MenuItem menu_items[MENU_ITEMS_NUMBER] = {
-        //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
-        //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
-        { "Resolution scale: %s", ARRAY, &old_resolution,          1, { "4X3", "3X3" }},
-        { "Palette: %i ",          INT,   &manual_palette_selected, 12 },
-        { "Show FPS: %s",         ARRAY, &show_fps,                1, { "NO ", "YES" }},
-        {},
-        { "Save state",           SAVE },
-        { "Load state",           LOAD },
-        {},
-        { "Reset to ROM select",  RESET },
-        { "Return to game",       RETURN }
-};
 
+const MenuItem menu_items[] = {
+    //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+    //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+    { "Palette: %i ", INT, &manual_palette_selected, 12 },
+    {},
+    { "Save state", SAVE },
+    { "Load state", LOAD },
+    {},
+    { "Reset to ROM select", ROM_SELECT },
+    { "Return to game", RETURN }
+};
+#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
 void save() {
     char pathname[255];
@@ -714,148 +696,120 @@ void load() {
     f_close(&fd);
 }
 
-void menu() {
+int menu() {
     bool exit = false;
-    old_resolution = resolution;
-    memset(&textmode, 0x00, sizeof(textmode));
-    memset(&colors, 0x00, sizeof(colors));
-    resolution = RESOLUTION_TEXTMODE;
-
-    char footer[80];
-    sprintf(footer, ":: %s %s build %s %s ::", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING, __DATE__, __TIME__);
-    draw_text(footer, (TEXTMODE_COLS - strlen(footer)) >> 1, 0, 11, 1);
+    graphics_set_mode(TEXTMODE_DEFAULT);
+    char footer[TEXTMODE_COLS];
+    snprintf(footer, TEXTMODE_COLS, ":: %s ::", PICO_PROGRAM_NAME);
+    draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, 0, 11, 1);
+    snprintf(footer, TEXTMODE_COLS, ":: %s build %s %s ::", PICO_PROGRAM_VERSION_STRING, __DATE__,
+             __TIME__);
+    draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS - 1, 11, 1);
     int current_item = 0;
-
     while (!exit) {
-#if USE_PS2_KBD
-        ps2kbd.tick();
-#endif
-#if USE_NESPAD
-        nespad_tick();
-#endif
-        sleep_ms(25);
-#if USE_NESPAD
-        nespad_tick();
-#endif
+        sleep_ms(100);
 
-        gamepad_bits.up = keyboard_bits.up && gamepad_bits.up;
-        gamepad_bits.down = keyboard_bits.down && gamepad_bits.down;
-        gamepad_bits.left = keyboard_bits.left && gamepad_bits.left;
-        gamepad_bits.right = keyboard_bits.right && gamepad_bits.right;
-        gamepad_bits.start = keyboard_bits.start && gamepad_bits.start;
-        gamepad_bits.a = keyboard_bits.a && gamepad_bits.a;
-        gamepad_bits.b = keyboard_bits.b && gamepad_bits.b;
-
-        if (!gamepad_bits.down) {
+        if ((gamepad_bits.down || keyboard_bits.down) != 0) {
             current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
             if (menu_items[current_item].type == NONE)
                 current_item++;
         }
-
-        if (!gamepad_bits.up) {
+        if ((gamepad_bits.up || keyboard_bits.up) != 0) {
             current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
             if (menu_items[current_item].type == NONE)
                 current_item--;
         }
-
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
-            uint8_t y = i + 1;
-            uint8_t x = 30;
+            uint8_t y = i + ((TEXTMODE_ROWS - MENU_ITEMS_NUMBER) >> 1);
+            uint8_t x = TEXTMODE_COLS / 2 - 10;
             uint8_t color = 0xFF;
             uint8_t bg_color = 0x00;
             if (current_item == i) {
                 color = 0x01;
                 bg_color = 0xFF;
             }
-
-            const MenuItem *item = &menu_items[i];
-
+            const MenuItem* item = &menu_items[i];
             if (i == current_item) {
                 switch (item->type) {
                     case INT:
                     case ARRAY:
                         if (item->max_value != 0) {
-                            auto *value = (uint8_t *) item->value;
-
-                            if (!(gamepad_bits.right) && *value < item->max_value) {
+                            auto* value = (uint8_t *)item->value;
+                            if ((gamepad_bits.right || keyboard_bits.right) && *value < item->max_value) {
                                 (*value)++;
                             }
-
-                            if (!(gamepad_bits.left) && *value > 0) {
+                            if ((gamepad_bits.left || keyboard_bits.left) && *value > 0) {
                                 (*value)--;
                             }
                         }
                         break;
                     case SAVE:
-                        if (!gamepad_bits.start) {
+                        if (gamepad_bits.start || keyboard_bits.start) {
                             save();
                             exit = true;
                         }
                         break;
                     case LOAD:
-                        if (!gamepad_bits.start) {
+                        if (gamepad_bits.start || keyboard_bits.start) {
                             load();
                             exit = true;
                         }
                         break;
                     case RETURN:
-                        if (!gamepad_bits.start) {
+                        if (gamepad_bits.start || keyboard_bits.start)
                             exit = true;
-                        }
-                        break;
-                    case RESET:
-                        if (!gamepad_bits.start) {
-                            restart = true;
-                            exit = true;
-                        }
                         break;
 
+                    case ROM_SELECT:
+                        if (gamepad_bits.start || keyboard_bits.start) {
+                            exit = true;
+                            //filebrowser(HOME_DIR, ".gb|.gbc");
+                        }
+                        break;
                 }
 
+                static char result[TEXTMODE_COLS];
+                switch (item->type) {
+                    case INT:
+                        snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *)item->value);
+                        break;
+                    case ARRAY:
+                        snprintf(result, TEXTMODE_COLS, item->text, item->value_list[*(uint8_t *)item->value]);
+                        break;
+                    case TEXT:
+                        snprintf(result, TEXTMODE_COLS, item->text, item->value);
+                        break;
+                    default:
+                        snprintf(result, TEXTMODE_COLS, "%s", item->text);
+                }
+                draw_text(result, x, y, color, bg_color);
             }
-            static char result[80];
-
-            switch (item->type) {
-                case INT:
-                    sprintf(result, item->text, *(uint8_t *) item->value);
-                    break;
-                case ARRAY:
-                    sprintf(result, item->text, item->value_list[*(uint8_t *) item->value]);
-                    break;
-                case TEXT:
-                    sprintf(result, item->text, item->value);
-                    break;
-                default:
-                    sprintf(result, "%s", item->text);
-            }
-
-            draw_text(result, x, y, color, bg_color);
+            sleep_ms(100);
         }
-
-        sleep_ms(100);
     }
-
-    if (manual_palette_selected > 0) {
-        manual_assign_palette(palette16, manual_palette_selected);
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++)
-                palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
-    }
-
-    resolution = old_resolution;
+    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    return 1;
 }
 
 
 int main() {
-    /* Overclock. */
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
-    sleep_ms(33);
+    sleep_ms(10);
+    set_sys_clock_khz(378 * KHZ, true);
 
-    set_sys_clock_khz(OVERCLOCKING * 1000, true);
+    memset(&SCREEN[0][0], 0, sizeof SCREEN);
+
+    ps2kbd.init_gpio();
+    nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
+
+    sleep_ms(50);
+
+    sem_init(&vga_start_semaphore, 0, 1);
+    multicore_launch_core1(render_core);
+    sem_release(&vga_start_semaphore);
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-
     for (int i = 0; i < 6; i++) {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, true);
@@ -863,36 +817,6 @@ int main() {
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
 
-#if !NDEBUG
-    stdio_init_all();
-        sleep_ms(3000);
-#endif
-
-
-    putstdio("INIT: ");
-
-    printf("VGA ");
-    sleep_ms(50);
-    vmode = Video(DEV_VGA, RES_HVGA);   //R
-    sleep_ms(50);
-
-#if USE_PS2_KBD
-    printf("PS2 KBD ");
-    ps2kbd.init_gpio();
-#endif
-
-
-#if USE_NESPAD
-    printf("NESPAD %i", nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT));
-#endif
-
-#if ENABLE_SOUND
-    printf("SOUND ");
-
-    // Allocate memory for the stream buffer
-    stream = static_cast<uint16_t *>(malloc(AUDIO_BUFFER_SIZE_BYTES));
-    assert(stream != NULL);
-    memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);  // Zero out the stream buffer
 
     // Initialize I2S sound driver
     i2s_config_t i2s_config = i2s_get_default_config();
@@ -900,51 +824,34 @@ int main() {
     i2s_config.dma_trans_count = AUDIO_SAMPLES;
     i2s_volume(&i2s_config, 0);
     i2s_init(&i2s_config);
-#endif
 
-
-    /* Start Core1, which processes requests to the LCD. */
-    putstdio("CORE1 ");
-
-    sem_init(&vga_start_semaphore, 0, 1);
-    multicore_launch_core1(render_loop);
-    sem_release(&vga_start_semaphore);
-
-#if ENABLE_SOUND
     // Initialize audio emulation
     audio_init();
 
-    putstdio("AUDIO ");
-#endif
-
-//while (1) {}
-
     while (true) {
         manual_palette_selected = 0;
-#if ENABLE_LCD
-#if ENABLE_SDCARD
         /* ROM File selector */
-        resolution = RESOLUTION_TEXTMODE;
-        fileselector();
-#endif
-#endif
-        resolution = RESOLUTION_3X3;
+
+        graphics_set_mode(TEXTMODE_DEFAULT);
+        filebrowser(HOME_DIR, "gb");
+        graphics_set_mode(GRAPHICSMODE_DEFAULT);
+
 
         /* Initialise GB context. */
-        enum gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
-                                           &gb_cart_ram_write, &gb_error, nullptr);
-        putstdio("GB ");
+        gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
+                                      &gb_cart_ram_write, &gb_error, nullptr);
 
         if (ret != GB_INIT_NO_ERROR) {
-            printf("Error: %d\n", ret);
-            break;
+            while (1) draw_text("error", 1, 1, 1, 2);
+            sleep_ms(100);
         }
 
         /* Automatically assign a colour palette to the game */
         if (!manual_palette_selected) {
             char rom_title[16];
             auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
-        } else {
+        }
+        else {
             manual_assign_palette(palette16, manual_palette_selected);
         }
 
@@ -952,42 +859,25 @@ int main() {
             for (int j = 0; j < 4; j++)
                 palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
 
-#if ENABLE_LCD
         gb_init_lcd(&gb, &lcd_draw_line);
-        putstdio("LCD ");
-#endif
-
-#if ENABLE_SDCARD
         /* Load Save File. */
         read_cart_ram_file(&gb);
-#endif
 
-        putstdio("\n> ");
-        uint_fast32_t frames = 0;
-        uint64_t start_time = time_us_64();
-
-//=============================================================================
+        //=============================================================================
         while (!restart) {
-#if USE_PS2_KBD
-            ps2kbd.tick();
-#endif
+            //------------------------------------------------------------------------------
 
-#if USE_NESPAD
-            nespad_tick();
-#endif
-//------------------------------------------------------------------------------
+            gb.direct.joypad_bits.up = !keyboard_bits.up && !gamepad_bits.up;
+            gb.direct.joypad_bits.down = !keyboard_bits.down && !gamepad_bits.down;
+            gb.direct.joypad_bits.left = !keyboard_bits.left && !gamepad_bits.left;
+            gb.direct.joypad_bits.right = !keyboard_bits.right && !gamepad_bits.right;
+            gb.direct.joypad_bits.a = !keyboard_bits.a && !gamepad_bits.a;
+            gb.direct.joypad_bits.b = !keyboard_bits.b && !gamepad_bits.b;
+            gb.direct.joypad_bits.select = !keyboard_bits.select && !gamepad_bits.select;
+            gb.direct.joypad_bits.start = !keyboard_bits.start && !gamepad_bits.start;
 
-            gb.direct.joypad_bits.up = keyboard_bits.up && gamepad_bits.up;
-            gb.direct.joypad_bits.down = keyboard_bits.down && gamepad_bits.down;
-            gb.direct.joypad_bits.left = keyboard_bits.left && gamepad_bits.left;
-            gb.direct.joypad_bits.right = keyboard_bits.right && gamepad_bits.right;
-            gb.direct.joypad_bits.a = keyboard_bits.a && gamepad_bits.a;
-            gb.direct.joypad_bits.b = keyboard_bits.b && gamepad_bits.b;
-            gb.direct.joypad_bits.select = keyboard_bits.select && gamepad_bits.select;
-            gb.direct.joypad_bits.start = keyboard_bits.start && gamepad_bits.start;
-
-//gb.direct.joypad = nespad_state;
-//------------------------------------------------------------------------------
+            //gb.direct.joypad = nespad_state;
+            //------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
             if (!gb.direct.joypad_bits.select && !gb.direct.joypad_bits.start) {
                 menu();
@@ -997,31 +887,13 @@ int main() {
             gb_run_frame(&gb);
 
             //gb.direct.interlace = 1;
-            frames++;
 
-#if ENABLE_SOUND
             if (!gb.direct.frame_skip) {
                 audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
-#endif
-            if (show_fps && frames >= 60) {
-                uint64_t end_time;
-                uint32_t diff;
-                uint8_t fps;
-
-                end_time = time_us_64();
-                diff = end_time - start_time;
-                fps = ((uint64_t) frames * 1000 * 1000) / diff;
-                char fps_text[4];
-                sprintf(fps_text, "%i ", fps);
-                draw_text(fps_text, 77, 0, 15, 0);
-                frames = 0;
-                start_time = time_us_64();
-            }
-
+            gpio_put(PICO_DEFAULT_LED_PIN, false);
         }
         restart = false;
     }
-
 }

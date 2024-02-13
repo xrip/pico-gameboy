@@ -1,51 +1,103 @@
 cmake_minimum_required(VERSION 3.13...3.23)
-
 include(pico_sdk_import.cmake)
+
+project(gameboy-color C CXX ASM)
+SET(BUILD_NAME "${PROJECT_NAME}")
+
+option(I2S "Enable I2S sound" OFF)
+option(I2S_CS4334 "Enable I2S CS4334 sound" OFF)
+option(VGA "Enable VGA" OFF)
+option(TFT "Enable TFT display" OFF)
+option(ILI9341 "Enable TFT ILI9341 display" OFF)
+option(HDMI "Enable HDMI display" OFF)
+option(TV "Enable TV composite output" OFF)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -O2")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -O2")
+
+pico_sdk_init()
 
 set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-project(gameboy-color C CXX ASM)
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-
-pico_sdk_init()
 
 add_subdirectory(drivers/fatfs)
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/ps2kbd)
-add_subdirectory(drivers/vga)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/audio)
+
+add_subdirectory(drivers/vga-nextgen)
+add_subdirectory(drivers/hdmi)
+add_subdirectory(drivers/st7789)
+add_subdirectory(drivers/tv)
+
+add_subdirectory(drivers/graphics)
 
 add_executable(${PROJECT_NAME}
         ext/minigb_apu/minigb_apu.c
         src/main.cpp
 )
 
-if(OVERCLOCKING)
-    set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME  "${PROJECT_NAME}-${OVERCLOCKING}MHz")
 
-    target_compile_definitions(${PROJECT_NAME} PRIVATE OVERCLOCKING=${OVERCLOCKING})
+pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
+target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
 
-    pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-    target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
-    pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+set(FAMILY rp2040)
+set(BOARD pico_sdk)
 
-    message(STATUS "==================================")
-    message(STATUS "Overclocking ${OVERCLOCKING}MHz enabled")
-    message(STATUS "==================================")
-    message(STATUS "")
-endif ()
+pico_set_program_name(gameboy-color "GameBody Emulator by xrip")
+pico_set_program_version(gameboy-color "test")
 
-target_include_directories(${PROJECT_NAME} PRIVATE inc ext/minigb_apu)
+target_include_directories(${PROJECT_NAME} PRIVATE
+        src
+        inc
+        ext/minigb_apu
+)
 
-target_link_libraries(${PROJECT_NAME}
+IF(TFT)
+    target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TFT)
+    SET(BUILD_NAME "${BUILD_NAME}-TFT")
+    IF(ILI9341)
+        SET(BUILD_NAME "${BUILD_NAME}-ILI9341")
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ILI9341)
+    ELSE()
+        SET(BUILD_NAME "${BUILD_NAME}-ST7789")
+    ENDIF()
+ELSEIF(HDMI)
+    target_link_libraries(${PROJECT_NAME} PRIVATE hdmi)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI)
+    SET(BUILD_NAME "${BUILD_NAME}-HDMI")
+ELSEIF(TV)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TV)
+    target_link_libraries(${PROJECT_NAME} PRIVATE tv)
+    SET(BUILD_NAME "${BUILD_NAME}-TV")
+ELSE()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VGA)
+    target_link_libraries(${PROJECT_NAME} PRIVATE vga-nextgen)
+    SET(BUILD_NAME "${BUILD_NAME}-VGA")
+ENDIF()
+
+IF(NOT I2S)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM_PIN=26)
+ELSEIF(I2S_CS4334)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
+    SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
+ELSE()
+    SET(BUILD_NAME "${BUILD_NAME}-I2S-TDA1387")
+ENDIF()
+
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${BUILD_NAME}")
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
         audio
+        graphics
 
-        vga
         ps2kbd
         sdcard
         fatfs
@@ -59,29 +111,13 @@ target_link_libraries(${PROJECT_NAME}
         pico_stdio
         pico_multicore
 
-        hardware_clocks hardware_pio hardware_vreg hardware_pio hardware_pwm
-        hardware_sync hardware_pll hardware_spi hardware_irq hardware_dma
-        pico_binary_info
+        tinyusb_board
+        tinyusb_device
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         # 16MB flash
         PICO_FLASH_SIZE_BYTES=16777216
-
-        PARAM_ASSERTIONS_DISABLE_ALL=1
-        PICO_ENTER_USB_BOOT_ON_EXIT=1
-        PICO_STDIO_ENABLE_CRLF_SUPPORT=0
-        PICO_STDIO_DEFAULT_CRLF=0
-        PICO_PRINTF_SUPPORT_FLOAT=0
-        PICO_PRINTF_SUPPORT_EXPONENTIAL=0
-        PICO_PRINTF_SUPPORT_LONG_LONG=1
-        PICO_PRINTF_SUPPORT_PTRDIFF_T=0
-
-        # VGA
-        VGA_GPIO_FIRST=6
-        VGA_GPIO_OUTNUM=6
-        VGA_GPIO_SYNC=12
-        VGA_VSYNC=13
 
         # SDCARD
         SDCARD_PIN_SPI0_CS=5
@@ -94,31 +130,23 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
         # NES Gamepad
         NES_GPIO_CLK=14
-        NES_GPIO_LAT=15
         NES_GPIO_DATA=16
+        NES_GPIO_LAT=15
 
-        # AUDIO
-        AUDIO_PWM_PIN=26
+        # VGA 8 pins starts from pin:
+        VGA_BASE_PIN=6
 
-        # Other
-        FF_USE_FIND
+        # HDMI 8 pins starts from pin:
+        HDMI_BASE_PIN=6
+
+        # TFT
+        TFT_CS_PIN=6
+        TFT_RST_PIN=8
+        TFT_LED_PIN=9
+        TFT_DC_PIN=10
+        TFT_DATA_PIN=12
+        TFT_CLK_PIN=13
 )
 
-
-function(pico_add_verbose_dis_output TARGET)
-    add_custom_command(TARGET ${TARGET} POST_BUILD
-            COMMAND ${CMAKE_OBJDUMP} -h $<TARGET_FILE:${TARGET}> >$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
-            COMMAND ${CMAKE_OBJDUMP} -drwCSl $<TARGET_FILE:${TARGET}> >>$<IF:$<BOOL:$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>>,$<TARGET_PROPERTY:${TARGET},OUTPUT_NAME>,$<TARGET_PROPERTY:${TARGET},NAME>>.dis
-    )
-endfunction()
-
-pico_set_program_name(gameboy-color "GameBoy Emulator by xrip")
-pico_set_program_version(gameboy-color "development version")
-
-#pico_set_binary_type(${PROJECT_NAME} copy_to_ram)
-#pico_set_binary_type(${PROJECT_NAME} no_flash)
-pico_enable_stdio_usb(${PROJECT_NAME} 1)
-pico_enable_stdio_uart(${PROJECT_NAME} 0)
-#pico_add_verbose_dis_output(${PROJECT_NAME})
-#pico_add_bin_output(${PROJECT_NAME})
-pico_add_uf2_output(${PROJECT_NAME})
+target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
+pico_add_extra_outputs(${PROJECT_NAME})
