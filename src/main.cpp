@@ -73,7 +73,7 @@ semaphore vga_start_semaphore;
 
 gb_s gb;
 
-uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
+uint8_t SCREEN[240][320];
 static FATFS fs;
 
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
@@ -193,7 +193,7 @@ void gb_error(struct gb_s* gb, const enum gb_error_e gb_err, const uint16_t addr
 
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
-    // multicore_lockout_victim_init();
+    multicore_lockout_victim_init();
     graphics_init();
 
     auto* buffer = &SCREEN[0][0];
@@ -201,9 +201,8 @@ void __time_critical_func(render_core)() {
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
     graphics_set_offset(0, 0);
-    graphics_set_flashmode(true, true);
+    graphics_set_flashmode(false, false);
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
-    sleep_ms(500);
     // clrScr(1);
 
     sem_acquire_blocking(&vga_start_semaphore);
@@ -243,10 +242,10 @@ void __time_critical_func(render_core)() {
  * Draws scanline into framebuffer.
  */
 void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+    // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
     //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    // for (unsigned int x = 0; x < LCD_WIDTH; x++)
-    // SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    for (unsigned int x = 0; x < LCD_WIDTH; x++)
+    SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
 }
 
 
@@ -360,7 +359,7 @@ static inline bool isExecutable(const char pathname[256], const char* extensions
     return false;
 }
 
-bool __time_critical_func(filebrowser_load) (const char pathname[256]) {
+bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
 
@@ -372,32 +371,37 @@ bool __time_critical_func(filebrowser_load) (const char pathname[256]) {
     FILINFO fileinfo;
     f_stat(pathname, &fileinfo);
 
-    if (16384 - 64 << 10 < fileinfo.fsize / 2) {
+    if (16384 - 64 << 10 < fileinfo.fsize) {
         draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
         sleep_ms(5000);
         return false;
     }
 
+
     draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
     sleep_ms(500);
-    multicore_lockout_start_blocking();
-    if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        auto flash_target_offset = FLASH_TARGET_OFFSET;
 
-        uint8_t buffer[FLASH_SECTOR_SIZE];
+
+    multicore_lockout_start_blocking();
+    auto flash_target_offset = FLASH_TARGET_OFFSET;
+    // const uint32_t ints = save_and_disable_interrupts();
+    flash_range_erase(flash_target_offset, fileinfo.fsize);
+    // restore_interrupts(ints);
+
+    if (FR_OK == f_open(&file, pathname, FA_READ)) {
+        uint8_t buffer[FLASH_PAGE_SIZE];
 
         do {
-            f_read(&file, &buffer, FLASH_SECTOR_SIZE, &bytes_read);
+            f_read(&file, &buffer, FLASH_PAGE_SIZE, &bytes_read);
 
             if (bytes_read) {
                 const uint32_t ints = save_and_disable_interrupts();
-                flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-                flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                flash_range_program(flash_target_offset, buffer, FLASH_PAGE_SIZE);
                 restore_interrupts(ints);
 
                 gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
 
-                flash_target_offset += FLASH_SECTOR_SIZE;
+                flash_target_offset += FLASH_PAGE_SIZE;
             }
         }
         while (bytes_read != 0);
@@ -406,17 +410,18 @@ bool __time_critical_func(filebrowser_load) (const char pathname[256]) {
     }
     f_close(&file);
     multicore_lockout_end_blocking();
+    // restore_interrupts(ints);
     return true;
 }
 
 
-void filebrowser_loadfile(char *filename) {
+void filebrowser_loadfile1(char* filename) {
     FIL fil;
     FRESULT fr;
 
-    uint8_t buffer[32768];
-    size_t bufsize = 32768;
-    //BYTE *buffer = (BYTE *) SCREEN;
+    static uint8_t __scratch_y("buf") buffer[256];
+    size_t bufsize = 256;
+    // BYTE *buffer = (BYTE *) SCREEN;
     auto ofs = FLASH_TARGET_OFFSET;
     fr = f_open(&fil, filename, FA_READ);
 
@@ -424,6 +429,7 @@ void filebrowser_loadfile(char *filename) {
     if (fr == FR_OK) {
         for (;;) {
             gpio_put(PICO_DEFAULT_LED_PIN, true);
+
             fr = f_read(&fil, buffer, bufsize, &bytesRead);
             if (fr == FR_OK) {
                 if (bytesRead == 0) {
@@ -431,14 +437,18 @@ void filebrowser_loadfile(char *filename) {
                 }
 
                 gpio_put(PICO_DEFAULT_LED_PIN, false);
+
                 // Disable interupts, erase, flash and enable interrupts
                 uint32_t ints = save_and_disable_interrupts();
-
                 flash_range_erase(ofs, bufsize);
+                restore_interrupts(ints);
+                // Disable interupts, erase, flash and enable interrupts
+                ints = save_and_disable_interrupts();
                 flash_range_program(ofs, buffer, bufsize);
                 restore_interrupts(ints);
                 ofs += bufsize;
-            } else {
+            }
+            else {
                 printf("Error reading rom: %d\n", fr);
                 break;
             }
@@ -705,22 +715,21 @@ int menu() {
     snprintf(footer, TEXTMODE_COLS, ":: %s build %s %s ::", PICO_PROGRAM_VERSION_STRING, __DATE__,
              __TIME__);
     draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS - 1, 11, 1);
-    int current_item = 0;
+    uint current_item = 0;
     while (!exit) {
-        sleep_ms(100);
-
-        if ((gamepad_bits.down || keyboard_bits.down) != 0) {
+        sleep_ms(25);
+        if (gamepad_bits.down || keyboard_bits.down) {
             current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
             if (menu_items[current_item].type == NONE)
                 current_item++;
         }
-        if ((gamepad_bits.up || keyboard_bits.up) != 0) {
+        if (gamepad_bits.up || keyboard_bits.up) {
             current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
             if (menu_items[current_item].type == NONE)
                 current_item--;
         }
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
-            uint8_t y = i + ((TEXTMODE_ROWS - MENU_ITEMS_NUMBER) >> 1);
+            uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
             uint8_t x = TEXTMODE_COLS / 2 - 10;
             uint8_t color = 0xFF;
             uint8_t bg_color = 0x00;
@@ -759,36 +768,32 @@ int menu() {
                         if (gamepad_bits.start || keyboard_bits.start)
                             exit = true;
                         break;
-
                     case ROM_SELECT:
-                        if (gamepad_bits.start || keyboard_bits.start) {
+                        if (gamepad_bits.start || keyboard_bits.start)
                             exit = true;
-                            //filebrowser(HOME_DIR, ".gb|.gbc");
-                        }
                         break;
                 }
-
-                static char result[TEXTMODE_COLS];
-                switch (item->type) {
-                    case INT:
-                        snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *)item->value);
-                        break;
-                    case ARRAY:
-                        snprintf(result, TEXTMODE_COLS, item->text, item->value_list[*(uint8_t *)item->value]);
-                        break;
-                    case TEXT:
-                        snprintf(result, TEXTMODE_COLS, item->text, item->value);
-                        break;
-                    default:
-                        snprintf(result, TEXTMODE_COLS, "%s", item->text);
-                }
-                draw_text(result, x, y, color, bg_color);
             }
-            sleep_ms(100);
+            static char result[TEXTMODE_COLS];
+            switch (item->type) {
+                case INT:
+                    snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *)item->value);
+                    break;
+                case ARRAY:
+                    snprintf(result, TEXTMODE_COLS, item->text, item->value_list[*(uint8_t *)item->value]);
+                    break;
+                case TEXT:
+                    snprintf(result, TEXTMODE_COLS, item->text, item->value);
+                    break;
+                default:
+                    snprintf(result, TEXTMODE_COLS, "%s", item->text);
+            }
+            draw_text(result, x, y, color, bg_color);
         }
     }
+
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
-    return 1;
+    return 0;
 }
 
 
