@@ -89,7 +89,8 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
     ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
     ((color565 & 0x1F) * 255 / 31) >> 6)
 
-#define convertRGB565toRGB222(rgb565) (rgb565)
+// #define convertRGB565toRGB222(rgb565) (rgb565)
+#define convertRGB565toRGB222(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 //((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 //((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 
@@ -203,7 +204,11 @@ void __time_critical_func(render_core)() {
     graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
+#ifdef HDMI | TV
+    graphics_set_offset(80, 8);
+#else
     graphics_set_offset(0, 0);
+#endif
     graphics_set_flashmode(false, false);
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     // clrScr(1);
@@ -343,20 +348,20 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-static inline bool isExecutable(const char pathname[256], const char* extensions) {
-    const char* extension = strrchr(pathname, '.');
+static inline bool isExecutable(const char pathname[256],const char extensions[11]) {
+    char* extension = strrchr(pathname, '.');
     if (extension == nullptr) {
         return false;
     }
     extension++; // Move past the '.' character
 
-    const char* token = strtok((char *)extensions, "|"); // Tokenize the extensions string using '|'
+    const char* token = strtok((char *)extensions, ","); // Tokenize the extensions string using '|'
 
-    while (token != nullptr) {
-        if (strcmp(extension, token) == 0) {
+    while (nullptr != token) {
+         if (memcmp(extension, token, 3) == 0) {
             return true;
         }
-        token = strtok(NULL, "|");
+        token = strtok(NULL, ",");
     }
 
     return false;
@@ -462,7 +467,7 @@ void filebrowser_loadfile1(char* filename) {
     }
 }
 
-void filebrowser(const char pathname[256], const char* executables) {
+void filebrowser(const char pathname[256], const char executables[11]) {
     bool debounce = true;
     char basepath[256];
     char tmp[TEXTMODE_COLS + 1];
@@ -773,6 +778,7 @@ int menu() {
                         break;
                     case ROM_SELECT:
                         if (gamepad_bits.start || keyboard_bits.start)
+                            filebrowser(HOME_DIR, "gb|gbc");
                             exit = true;
                         break;
                 }
@@ -852,9 +858,8 @@ int main() {
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gb");
+        filebrowser(HOME_DIR, "gb\0,gbc");
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
-
 
         /* Initialise GB context. */
         gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
