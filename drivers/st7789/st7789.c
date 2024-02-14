@@ -250,12 +250,13 @@ void __inline __scratch_y("refresh_lcd") refresh_lcd() {
             const uint8_t* bitmap = graphics_buffer;
             lcd_set_window(graphics_buffer_shift_x, graphics_buffer_shift_y, graphics_buffer_width,
                            graphics_buffer_height);
-            uint32_t i = graphics_buffer_width * graphics_buffer_height;
+             uint32_t i = graphics_buffer_width * graphics_buffer_height;
             start_pixels();
             // st7789_dma_pixels(graphics_buffer, i);
             while (--i) {
-               st7789_lcd_put_pixel(pio, sm, palette[*bitmap++]);
+                st7789_lcd_put_pixel(pio, sm, palette[*bitmap++]);
             }
+
             stop_pixels();
         }
     }

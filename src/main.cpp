@@ -73,7 +73,7 @@ semaphore vga_start_semaphore;
 
 gb_s gb;
 
-uint8_t SCREEN[240][320];
+uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
 static FATFS fs;
 
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
@@ -84,13 +84,15 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 #define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
 
 // Function to convert RGB565 to RGB222
-#define convertRGB565toRGB222(color565) \
+#define convertRGB565toRGB2221(color565) \
     (((((color565 >> 11) & 0x1F) * 255 / 31) >> 6) << 4 | \
     ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
     ((color565 & 0x1F) * 255 / 31) >> 6)
 
+#define convertRGB565toRGB222(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
+//((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 
-typedef uint8_t palette222_t[3][4];
+typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
 static uint8_t manual_palette_selected = 0;
@@ -200,7 +202,7 @@ void __time_critical_func(render_core)() {
     graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
-    graphics_set_offset(0, 0);
+    graphics_set_offset(160, 240-144);
     graphics_set_flashmode(false, false);
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     // clrScr(1);
@@ -242,10 +244,10 @@ void __time_critical_func(render_core)() {
  * Draws scanline into framebuffer.
  */
 void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+     memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
     //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    for (unsigned int x = 0; x < LCD_WIDTH; x++)
-    SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    // for (unsigned int x = 0; x < LCD_WIDTH; x++)
+    // SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
 }
 
 
@@ -861,8 +863,11 @@ int main() {
         }
 
         for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++)
-                palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
+            for (int j = 0; j < 4; j++) {
+                graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
+                // palette[i][j] = i * 4 + j;
+            }
+                //palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
 
         gb_init_lcd(&gb, &lcd_draw_line);
         /* Load Save File. */
