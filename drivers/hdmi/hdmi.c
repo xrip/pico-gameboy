@@ -187,7 +187,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         switch (graphics_mode) {
             case GRAPHICSMODE_DEFAULT:
             case VGA_320x240x256: {
-                int y = line / 3;
+                int y = line / 2;
                 // uint8_t* input_buffer = &graphics_buffer[(line / 3) * graphics_buffer_width];
                 //заполняем пространство сверху и снизу графического буфера
                 if (y < graphics_buffer_shift_y) {

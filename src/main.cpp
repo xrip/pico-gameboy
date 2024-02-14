@@ -204,8 +204,8 @@ void __time_critical_func(render_core)() {
     graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
-#ifdef HDMI | TV
-    graphics_set_offset(80, 8);
+#if HDMI | TV
+    graphics_set_offset(80, (240-144) / 2) ;
 #else
     graphics_set_offset(0, 0);
 #endif
@@ -714,7 +714,7 @@ void load() {
     f_close(&fd);
 }
 
-int menu() {
+void menu() {
     bool exit = false;
     graphics_set_mode(TEXTMODE_DEFAULT);
     char footer[TEXTMODE_COLS];
@@ -724,6 +724,7 @@ int menu() {
              __TIME__);
     draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS - 1, 11, 1);
     uint current_item = 0;
+
     while (!exit) {
         sleep_ms(25);
         if (gamepad_bits.down || keyboard_bits.down) {
@@ -776,10 +777,12 @@ int menu() {
                         if (gamepad_bits.start || keyboard_bits.start)
                             exit = true;
                         break;
+
                     case ROM_SELECT:
-                        if (gamepad_bits.start || keyboard_bits.start)
-                            filebrowser(HOME_DIR, "gb|gbc");
-                            exit = true;
+                        if (gamepad_bits.start || keyboard_bits.start) {
+                            restart = true;
+                            return;
+                        }
                         break;
                 }
             }
@@ -813,7 +816,6 @@ int menu() {
     }
 
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
-    return 0;
 }
 
 
