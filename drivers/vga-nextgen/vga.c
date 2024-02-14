@@ -120,8 +120,8 @@ void __time_critical_func() dma_handler_VGA() {
         case VGA_320x200x256x4:
         case GRAPHICSMODE_DEFAULT:
         line_number = screen_line / 2;
-        if (screen_line % 2) return;
-        y = screen_line  - graphics_buffer_shift_y;
+        if (screen_line % 3) return;
+        y = screen_line / 3 - graphics_buffer_shift_y;
             break;
 
         case TEXTMODE_160x100:
@@ -185,7 +185,7 @@ void __time_critical_func() dma_handler_VGA() {
         dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false); // TODO: ensue it is required
         return;
     }
-    if (false&& y >= graphics_buffer_height) {
+    if (y >= graphics_buffer_height) {
         // заполнение линии цветом фона
         if (y == graphics_buffer_height | y == graphics_buffer_height + 1 |
             y == graphics_buffer_height + 2) {
