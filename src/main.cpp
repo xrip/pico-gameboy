@@ -204,11 +204,13 @@ void __time_critical_func(render_core)() {
     graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
-#if HDMI | TV
-    graphics_set_offset(80, (240-144) / 2) ;
-#else
+
+#if VGA
     graphics_set_offset(0, 0);
+#else
+    graphics_set_offset(80, 48) ;
 #endif
+
     graphics_set_flashmode(false, false);
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     // clrScr(1);
