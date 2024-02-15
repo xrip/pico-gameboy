@@ -208,10 +208,10 @@ void __time_critical_func(render_core)() {
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
 
-#ifdef VGA
+#if VGA
     graphics_set_offset(60, 6);
 #endif
-#ifdef TFT
+#if TFT
     graphics_set_offset(0, -12) ;
 #endif
 #if HDMI | TV
