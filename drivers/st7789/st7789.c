@@ -238,8 +238,8 @@ void __inline __scratch_y("refresh_lcd") refresh_lcd() {
 
                     for (uint8_t bit = 0; bit < 6; bit++) {
                         st7789_lcd_put_pixel(pio, sm, textmode_palette[(c && CHECK_BIT(glyph_row, bit))
-                                                                       ? colorIndex & 0x0F
-                                                                       : colorIndex >> 4 & 0x0F]);
+                                                                           ? colorIndex & 0x0F
+                                                                           : colorIndex >> 4 & 0x0F]);
                     }
                 }
                 st7789_lcd_put_pixel(pio, sm, 0x0000);
@@ -247,15 +247,17 @@ void __inline __scratch_y("refresh_lcd") refresh_lcd() {
             stop_pixels();
             break;
         case GRAPHICSMODE_DEFAULT: {
-            const uint8_t* bitmap = graphics_buffer;
-            lcd_set_window(graphics_buffer_shift_x, graphics_buffer_shift_y, graphics_buffer_width,
-                           graphics_buffer_height);
-             uint32_t i = graphics_buffer_width * graphics_buffer_height;
+            const uint8_t* bitmap = graphics_buffer + 12 * 160;
+            lcd_set_window(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
             start_pixels();
-            // st7789_dma_pixels(graphics_buffer, i);
-            while (--i) {
-                st7789_lcd_put_pixel(pio, sm, palette[*bitmap++]);
-            }
+            for (int y = 0; y < 240; y++)
+                for (int x = 0; x < 160; x++) {
+                    const uint16_t color = palette[bitmap[x + y / 2 * 160]];
+
+                    st7789_lcd_put_pixel(pio, sm, color);
+                    st7789_lcd_put_pixel(pio, sm, color);
+                }
 
             stop_pixels();
         }
@@ -268,4 +270,3 @@ void __inline __scratch_y("refresh_lcd") refresh_lcd() {
 void graphics_set_palette(const uint8_t i, const uint32_t color) {
     palette[i] = (uint16_t)color;
 }
-
