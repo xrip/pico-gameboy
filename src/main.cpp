@@ -429,51 +429,6 @@ bool filebrowser_loadfile(const char pathname[256]) {
     return true;
 }
 
-
-void filebrowser_loadfile1(char* filename) {
-    FIL fil;
-    FRESULT fr;
-
-    static uint8_t __scratch_y("buf") buffer[256];
-    size_t bufsize = 256;
-    // BYTE *buffer = (BYTE *) SCREEN;
-    auto ofs = FLASH_TARGET_OFFSET;
-    fr = f_open(&fil, filename, FA_READ);
-
-    UINT bytesRead;
-    if (fr == FR_OK) {
-        for (;;) {
-            gpio_put(PICO_DEFAULT_LED_PIN, true);
-
-            fr = f_read(&fil, buffer, bufsize, &bytesRead);
-            if (fr == FR_OK) {
-                if (bytesRead == 0) {
-                    break;
-                }
-
-                gpio_put(PICO_DEFAULT_LED_PIN, false);
-
-                // Disable interupts, erase, flash and enable interrupts
-                uint32_t ints = save_and_disable_interrupts();
-                flash_range_erase(ofs, bufsize);
-                restore_interrupts(ints);
-                // Disable interupts, erase, flash and enable interrupts
-                ints = save_and_disable_interrupts();
-                flash_range_program(ofs, buffer, bufsize);
-                restore_interrupts(ints);
-                ofs += bufsize;
-            }
-            else {
-                printf("Error reading rom: %d\n", fr);
-                break;
-            }
-        }
-
-
-        f_close(&fil);
-    }
-}
-
 void filebrowser(const char pathname[256], const char executables[11]) {
     bool debounce = true;
     char basepath[256];
@@ -626,28 +581,35 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         }
 
         for (int i = 0; i < per_page; i++) {
-            const auto item = fileItems[offset + i];
             uint8_t color = 11;
             uint8_t bg_color = 1;
 
-            if (i == current_item) {
-                color = 0;
-                bg_color = 3;
-                memset(tmp, 0xCD, TEXTMODE_COLS - 2);
-                tmp[TEXTMODE_COLS - 2] = '\0';
-                draw_text(tmp, 1, per_page + 1, 11, 1);
-                snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1,
-                         total_files);
-                draw_text(tmp, 2, per_page + 1, 14, 3);
-            }
+            if (offset+i < max_files) {
+                const auto item = fileItems[offset + i];
 
-            const auto len = strlen(item.filename);
-            color = item.is_directory ? 15 : color;
-            color = item.is_executable ? 10 : color;
-            //color = strstr((char *)rom_filename, item.filename) != nullptr ? 13 : color;
-            memset(tmp, ' ', TEXTMODE_COLS - 2);
-            tmp[TEXTMODE_COLS - 2] = '\0';
-            memcpy(&tmp, item.filename, len < TEXTMODE_COLS - 2 ? len : TEXTMODE_COLS - 2);
+
+                if (i == current_item) {
+                    color = 0;
+                    bg_color = 3;
+                    memset(tmp, 0xCD, TEXTMODE_COLS - 2);
+                    tmp[TEXTMODE_COLS - 2] = '\0';
+                    draw_text(tmp, 1, per_page + 1, 11, 1);
+                    snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1,
+                             total_files);
+                    draw_text(tmp, 2, per_page + 1, 14, 3);
+                }
+
+                const auto len = strlen(item.filename);
+                color = item.is_directory ? 15 : color;
+                color = item.is_executable ? 10 : color;
+                //color = strstr((char *)rom_filename, item.filename) != nullptr ? 13 : color;
+
+                memset(tmp, ' ', TEXTMODE_COLS - 2);
+                tmp[TEXTMODE_COLS - 2] = '\0';
+                memcpy(&tmp, item.filename, len < TEXTMODE_COLS - 2 ? len : TEXTMODE_COLS - 2);
+            } else {
+                memset(tmp, ' ', TEXTMODE_COLS - 2);
+            }
             draw_text(tmp, 1, i + 1, color, bg_color);
         }
     }
