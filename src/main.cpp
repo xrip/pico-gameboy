@@ -212,7 +212,7 @@ void __time_critical_func(render_core)() {
     graphics_set_offset(60, 6);
 #endif
 #if TFT
-    graphics_set_offset(0, -12) ;
+    graphics_set_offset(0, -24) ;
 #endif
 #if HDMI | TV
     graphics_set_offset(80, 0) ;
