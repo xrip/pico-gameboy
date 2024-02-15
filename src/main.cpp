@@ -89,8 +89,11 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
     ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
     ((color565 & 0x1F) * 255 / 31) >> 6)
 
-// #define convertRGB565toRGB222(rgb565) (rgb565)
+#if TFT
+#define convertRGB565toRGB222(rgb565) (rgb565)
+#else
 #define convertRGB565toRGB222(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
+#endif
 //((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 //((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 
@@ -205,10 +208,15 @@ void __time_critical_func(render_core)() {
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
 
-#if VGA
-    graphics_set_offset(0, 0);
-#else
-    graphics_set_offset(80, 48) ;
+#ifdef VGA
+    graphics_set_offset(60, 6);
+#endif
+#ifdef TFT
+    graphics_set_offset(0, -12) ;
+#endif
+#if HDMI | TV
+    graphics_set_offset(80, 0) ;
+    // graphics_set_offset(80, 48) ;
 #endif
 
     graphics_set_flashmode(false, false);
