@@ -64,7 +64,7 @@
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
 #define HOME_DIR (char*)"\\GB"
-#define FLASH_TARGET_OFFSET (1024 * 1024)
+#define FLASH_TARGET_OFFSET (128 * 1024)
 const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
 
 static uint8_t ram[32768];
@@ -77,8 +77,6 @@ uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
 static FATFS fs;
 
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
-
-#define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
 
 #if TFT
 #define convertRGB565toRGB222(rgb565) (rgb565)
@@ -349,9 +347,8 @@ int compareFileItems(const void* a, const void* b) {
 }
 
 bool isExecutable(const char pathname[255],const char *extensions) {
-    char *token;
     char *pathCopy = strdup(pathname);
-    token = strtok(pathCopy, ".");
+    const char* token = strtok(pathCopy, ".");
     while (token != NULL) {
         if (strstr(extensions, token) != NULL) {
             free(pathCopy);
@@ -441,7 +438,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
         draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
         memset(tmp, ' ', TEXTMODE_COLS);
 
-#ifndef TFT
+
         draw_text(tmp, 0, 29, 0, 0);
         auto off = 0;
         draw_text("START", off, 29, 7, 0);
@@ -451,6 +448,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
         draw_text("SELECT", off, 29, 7, 0);
         off += 6;
         draw_text(" Run previous  ", off, 29, 0, 3);
+#ifndef TFT
         off += 16;
         draw_text("ARROWS", off, 29, 7, 0);
         off += 6;
@@ -877,7 +875,6 @@ int main() {
                 audio_callback(NULL, reinterpret_cast<int16_t *>(stream), AUDIO_BUFFER_SIZE_BYTES);
                 i2s_dma_write(&i2s_config, reinterpret_cast<const int16_t *>(stream));
             }
-            gpio_put(PICO_DEFAULT_LED_PIN, false);
         }
         restart = false;
     }
