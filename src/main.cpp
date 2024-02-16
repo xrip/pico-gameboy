@@ -78,24 +78,13 @@ static FATFS fs;
 
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 
-#define X2(a) (a | (a << 8))
-#define X4(a) (a | (a << 8) | (a << 16) | (a << 24))
-#define VGA_RGB_222(r, g, b) ((r << 4) | (g << 2) | b)
 #define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
-
-// Function to convert RGB565 to RGB222
-#define convertRGB565toRGB2221(color565) \
-    (((((color565 >> 11) & 0x1F) * 255 / 31) >> 6) << 4 | \
-    ((((color565 >> 5) & 0x3F) * 255 / 63) >> 6) << 2 | \
-    ((color565 & 0x1F) * 255 / 31) >> 6)
 
 #if TFT
 #define convertRGB565toRGB222(rgb565) (rgb565)
 #else
 #define convertRGB565toRGB222(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 #endif
-//((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
-//((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
@@ -359,22 +348,18 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-static inline bool isExecutable(const char pathname[256], const char extensions[11]) {
-    char* extension = strrchr(pathname, '.');
-    if (extension == nullptr) {
-        return false;
-    }
-    extension++; // Move past the '.' character
-
-    const char* token = strtok((char *)extensions, ","); // Tokenize the extensions string using '|'
-
-    while (nullptr != token) {
-        if (memcmp(extension, token, 3) == 0) {
+bool isExecutable(const char pathname[255],const char *extensions) {
+    char *token;
+    char *pathCopy = strdup(pathname);
+    token = strtok(pathCopy, ".");
+    while (token != NULL) {
+        if (strstr(extensions, token) != NULL) {
+            free(pathCopy);
             return true;
         }
         token = strtok(NULL, ",");
     }
-
+    free(pathCopy);
     return false;
 }
 
@@ -831,7 +816,7 @@ int main() {
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gbc");
+        filebrowser(HOME_DIR, "gbc,gb");
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
 
         /* Initialise GB context. */
