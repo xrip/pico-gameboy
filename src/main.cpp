@@ -831,7 +831,7 @@ int main() {
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gb");
+        filebrowser(HOME_DIR, "gbc");
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
 
         /* Initialise GB context. */

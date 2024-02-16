@@ -47,6 +47,7 @@
 #include <cstdint>	/* Required for int types */
 #include <cstring>	/* Required for memset */
 #include <ctime>	/* Required for tm struct */
+#include <graphics.h>
 #include <pico/runtime.h>
 /**
 * If PEANUT_GB_IS_LITTLE_ENDIAN is positive, then Peanut-GB will be configured
@@ -380,23 +381,13 @@
 # define PEANUT_GB_U8_TO_U16(h,l) ((h) | ((l) << 8))
 #endif
 
-uint8_t convertRGB555toRGB222(uint16_t rgb555) {
-    uint8_t rgb222 = 0;
-
+static inline uint32_t RGB555_TO_RGB888(uint16_t rgb555) {
 // Extract individual color components from rgb555
-    uint8_t r = (rgb555 >> 10) & 0x1F;
-    uint8_t g = (rgb555 >> 5) & 0x1F;
-    uint8_t b = rgb555 & 0x1F;
+	const uint8_t R = (rgb555 >> 10 & 0b11111) * 8;
+	const uint8_t G = (rgb555 >> 5 & 0b11111) * 8;
+	const uint8_t B = (rgb555 & 0b11111) * 8;
 
-// Convert each color component to rgb222
-    uint8_t r222 = (r >> 3) & 0x03;
-    uint8_t g222 = (g >> 3) & 0x03;
-    uint8_t b222 = (b >> 3) & 0x03;
-
-// Combine the converted color components into a single 8-bit value
-    rgb222 = (r222 << 4) | (g222 << 2) | b222;
-
-    return rgb222;
+    return RGB888(R + R / 32,G + G / 32, B + B / 32);
 }
 
 struct cpu_registers_s
@@ -676,7 +667,7 @@ struct gb_s
 		uint16_t wramBankOffset;
 		uint8_t vramBank;
 		uint16_t vramBankOffset;
-		uint8_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
+		uint32_t fixPalette[0x40];  //BG then OAM palettes fixed for the screen
 		uint8_t OAMPalette[0x40];
 		uint8_t BGPalette[0x40];
 		uint8_t OAMPaletteID;
@@ -1330,7 +1321,8 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 		case 0x69:
 			gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
 			fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
-			gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = convertRGB555toRGB222(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+			gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = RGB555_TO_RGB888(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+			graphics_set_palette((gb->cgb.BGPaletteID & 0x3E) >> 1,gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)]);
 			if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
 			return;
 
@@ -1344,7 +1336,9 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 		case 0x6B:
 			gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3F)] = val;
 			fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
-			gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = convertRGB555toRGB222(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+
+			gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = RGB555_TO_RGB888(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
+			graphics_set_palette(0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1), gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)]);
 			if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
 			return;
 
