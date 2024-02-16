@@ -203,7 +203,7 @@ void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
     graphics_init();
 
-    auto* buffer = &SCREEN[0][0];
+    const auto buffer = (uint8_t *)SCREEN;
     graphics_set_buffer(buffer, LCD_WIDTH, LCD_HEIGHT);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
@@ -212,8 +212,7 @@ void __time_critical_func(render_core)() {
     graphics_set_offset(60, 6);
 #endif
 #if HDMI | TV
-    graphics_set_offset(80, 0) ;
-    // graphics_set_offset(80, 48) ;
+    graphics_set_offset(80, 48);
 #endif
 
     graphics_set_flashmode(false, false);
@@ -257,10 +256,15 @@ void __time_critical_func(render_core)() {
  * Draws scanline into framebuffer.
  */
 void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
-     // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+    // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
     //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
-    for (unsigned int x = 0; x < LCD_WIDTH; x++)
-    SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    if (gb->cgb.cgbMode) {
+        memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+    }
+    else {
+        for (unsigned int x = 0; x < LCD_WIDTH; x++)
+            SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    }
 }
 
 
@@ -355,7 +359,7 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-static inline bool isExecutable(const char pathname[256],const char extensions[11]) {
+static inline bool isExecutable(const char pathname[256], const char extensions[11]) {
     char* extension = strrchr(pathname, '.');
     if (extension == nullptr) {
         return false;
@@ -365,7 +369,7 @@ static inline bool isExecutable(const char pathname[256],const char extensions[1
     const char* token = strtok((char *)extensions, ","); // Tokenize the extensions string using '|'
 
     while (nullptr != token) {
-         if (memcmp(extension, token, 3) == 0) {
+        if (memcmp(extension, token, 3) == 0) {
             return true;
         }
         token = strtok(NULL, ",");
@@ -374,7 +378,7 @@ static inline bool isExecutable(const char pathname[256],const char extensions[1
     return false;
 }
 
-bool filebrowser_loadfile(const char pathname[256]) {
+bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
 
@@ -387,7 +391,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
     f_stat(pathname, &fileinfo);
 
     if (16384 - 64 << 10 < fileinfo.fsize) {
-        draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
+        draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
         sleep_ms(5000);
         return false;
     }
@@ -429,7 +433,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
     return true;
 }
 
-void filebrowser(const char pathname[256], const char executables[11]) {
+void __not_in_flash_func(filebrowser)(const char pathname[256], const char executables[11]) {
     bool debounce = true;
     char basepath[256];
     char tmp[TEXTMODE_COLS + 1];
@@ -444,173 +448,177 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         while (true);
     }
 
-    memset(fileItems, 0, sizeof(file_item_t) * max_files);
-    int total_files = 0;
+    while (true) {
+        memset(fileItems, 0, sizeof(file_item_t) * max_files);
+        int total_files = 0;
 
-    snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
-    draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
-    memset(tmp, ' ', TEXTMODE_COLS);
+        snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
+        draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+        memset(tmp, ' ', TEXTMODE_COLS);
 
 #ifndef TFT
-    draw_text(tmp, 0, 29, 0, 0);
-    auto off = 0;
-    draw_text("START", off, 29, 7, 0);
-    off += 5;
-    draw_text(" Run at cursor ", off, 29, 0, 3);
-    off += 16;
-    draw_text("SELECT", off, 29, 7, 0);
-    off += 6;
-    draw_text(" Run previous  ", off, 29, 0, 3);
-    off += 16;
-    draw_text("ARROWS", off, 29, 7, 0);
-    off += 6;
-    draw_text(" Navigation    ", off, 29, 0, 3);
-    off += 16;
-    draw_text("A/F10", off, 29, 7, 0);
-    off += 5;
-    draw_text(" USB DRV ", off, 29, 0, 3);
+        draw_text(tmp, 0, 29, 0, 0);
+        auto off = 0;
+        draw_text("START", off, 29, 7, 0);
+        off += 5;
+        draw_text(" Run at cursor ", off, 29, 0, 3);
+        off += 16;
+        draw_text("SELECT", off, 29, 7, 0);
+        off += 6;
+        draw_text(" Run previous  ", off, 29, 0, 3);
+        off += 16;
+        draw_text("ARROWS", off, 29, 7, 0);
+        off += 6;
+        draw_text(" Navigation    ", off, 29, 0, 3);
+        off += 16;
+        draw_text("A/F10", off, 29, 7, 0);
+        off += 5;
+        draw_text(" USB DRV ", off, 29, 0, 3);
 #endif
 
-    if (FR_OK != f_opendir(&dir, basepath)) {
-        draw_text("Failed to open directory", 1, 1, 4, 0);
-        while (true);
-    }
-
-    if (strlen(basepath) > 0) {
-        strcpy(fileItems[total_files].filename, "..\0");
-        fileItems[total_files].is_directory = true;
-        fileItems[total_files].size = 0;
-        total_files++;
-    }
-
-    while (f_readdir(&dir, &fileInfo) == FR_OK &&
-           fileInfo.fname[0] != '\0' &&
-           total_files < max_files
-    ) {
-        // Set the file item properties
-        fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
-        fileItems[total_files].size = fileInfo.fsize;
-        fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
-        strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
-        total_files++;
-    }
-    f_closedir(&dir);
-
-    qsort(fileItems, total_files, sizeof(file_item_t), compareFileItems);
-
-    if (total_files > max_files) {
-        draw_text(" Too many files!! ", TEXTMODE_COLS - 17, 0, 12, 3);
-    }
-
-    int offset = 0;
-    int current_item = 0;
-
-    while (true) {
-        sleep_ms(100);
-
-        if (!debounce) {
-            debounce = !(nespad_state & DPAD_START) && !keyboard_bits.start;
+        if (FR_OK != f_opendir(&dir, basepath)) {
+            draw_text("Failed to open directory", 1, 1, 4, 0);
+            while (true);
         }
 
-        // ESCAPE
-        if (nespad_state & DPAD_SELECT || keyboard_bits.select) {
-            return;
+        if (strlen(basepath) > 0) {
+            strcpy(fileItems[total_files].filename, "..\0");
+            fileItems[total_files].is_directory = true;
+            fileItems[total_files].size = 0;
+            total_files++;
         }
 
-        if (nespad_state & DPAD_DOWN || keyboard_bits.down) {
-            if (offset + (current_item + 1) < total_files) {
-                if (current_item + 1 < per_page) {
-                    current_item++;
-                }
-                else {
-                    offset++;
-                }
-            }
+        while (f_readdir(&dir, &fileInfo) == FR_OK &&
+               fileInfo.fname[0] != '\0' &&
+               total_files < max_files
+        ) {
+            // Set the file item properties
+            fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
+            fileItems[total_files].size = fileInfo.fsize;
+            fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
+            strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
+            total_files++;
+        }
+        f_closedir(&dir);
+
+        qsort(fileItems, total_files, sizeof(file_item_t), compareFileItems);
+
+        if (total_files > max_files) {
+            draw_text(" Too many files!! ", TEXTMODE_COLS - 17, 0, 12, 3);
         }
 
-        if (nespad_state & DPAD_UP || keyboard_bits.up) {
-            if (current_item > 0) {
-                current_item--;
-            }
-            else if (offset > 0) {
-                offset--;
-            }
-        }
+        int offset = 0;
+        int current_item = 0;
 
-        if (nespad_state & DPAD_RIGHT || keyboard_bits.right) {
-            offset += per_page;
-            if (offset + (current_item + 1) > total_files) {
-                offset = total_files - (current_item + 1);
-            }
-        }
+        while (true) {
+            sleep_ms(100);
 
-        if (nespad_state & DPAD_LEFT || keyboard_bits.left) {
-            if (offset > per_page) {
-                offset -= per_page;
-            }
-            else {
-                offset = 0;
-                current_item = 0;
-            }
-        }
-
-        if (debounce && (nespad_state & DPAD_START || keyboard_bits.start)) {
-            auto file_at_cursor = fileItems[offset + current_item];
-
-            if (file_at_cursor.is_directory) {
-                if (strcmp(file_at_cursor.filename, "..") == 0) {
-                    const char* lastBackslash = strrchr(basepath, '\\');
-                    if (lastBackslash != nullptr) {
-                        const size_t length = lastBackslash - basepath;
-                        basepath[length] = '\0';
-                    }
-                }
-                else {
-                    sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
-                }
-                debounce = false;
-                break;
+            if (!debounce) {
+                debounce = !(nespad_state & DPAD_START || keyboard_bits.start);
             }
 
-            if (file_at_cursor.is_executable) {
-                sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
-
-                filebrowser_loadfile(tmp);
+            // ESCAPE
+            if (nespad_state & DPAD_SELECT || keyboard_bits.select) {
                 return;
             }
-        }
 
-        for (int i = 0; i < per_page; i++) {
-            uint8_t color = 11;
-            uint8_t bg_color = 1;
+            if (nespad_state & DPAD_DOWN || keyboard_bits.down) {
+                if (offset + (current_item + 1) < total_files) {
+                    if (current_item + 1 < per_page) {
+                        current_item++;
+                    }
+                    else {
+                        offset++;
+                    }
+                }
+            }
 
-            if (offset+i < max_files) {
-                const auto item = fileItems[offset + i];
+            if (nespad_state & DPAD_UP || keyboard_bits.up) {
+                if (current_item > 0) {
+                    current_item--;
+                }
+                else if (offset > 0) {
+                    offset--;
+                }
+            }
 
+            if (nespad_state & DPAD_RIGHT || keyboard_bits.right) {
+                offset += per_page;
+                if (offset + (current_item + 1) > total_files) {
+                    offset = total_files - (current_item + 1);
+                }
+            }
 
-                if (i == current_item) {
-                    color = 0;
-                    bg_color = 3;
-                    memset(tmp, 0xCD, TEXTMODE_COLS - 2);
-                    tmp[TEXTMODE_COLS - 2] = '\0';
-                    draw_text(tmp, 1, per_page + 1, 11, 1);
-                    snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1,
-                             total_files);
-                    draw_text(tmp, 2, per_page + 1, 14, 3);
+            if (nespad_state & DPAD_LEFT || keyboard_bits.left) {
+                if (offset > per_page) {
+                    offset -= per_page;
+                }
+                else {
+                    offset = 0;
+                    current_item = 0;
+                }
+            }
+
+            if (debounce && (nespad_state & DPAD_START || keyboard_bits.start)) {
+                auto file_at_cursor = fileItems[offset + current_item];
+
+                if (file_at_cursor.is_directory) {
+                    if (strcmp(file_at_cursor.filename, "..") == 0) {
+                        const char* lastBackslash = strrchr(basepath, '\\');
+                        if (lastBackslash != nullptr) {
+                            const size_t length = lastBackslash - basepath;
+                            basepath[length] = '\0';
+                        }
+                    }
+                    else {
+                        sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
+                    }
+                    debounce = false;
+                    break;
                 }
 
-                const auto len = strlen(item.filename);
-                color = item.is_directory ? 15 : color;
-                color = item.is_executable ? 10 : color;
-                //color = strstr((char *)rom_filename, item.filename) != nullptr ? 13 : color;
+                if (file_at_cursor.is_executable) {
+                    sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
-                memset(tmp, ' ', TEXTMODE_COLS - 2);
-                tmp[TEXTMODE_COLS - 2] = '\0';
-                memcpy(&tmp, item.filename, len < TEXTMODE_COLS - 2 ? len : TEXTMODE_COLS - 2);
-            } else {
-                memset(tmp, ' ', TEXTMODE_COLS - 2);
+                    filebrowser_loadfile(tmp);
+                    return;
+                }
             }
-            draw_text(tmp, 1, i + 1, color, bg_color);
+
+            for (int i = 0; i < per_page; i++) {
+                uint8_t color = 11;
+                uint8_t bg_color = 1;
+
+                if (offset + i < max_files) {
+                    const auto item = fileItems[offset + i];
+
+
+                    if (i == current_item) {
+                        color = 0;
+                        bg_color = 3;
+                        memset(tmp, 0xCD, TEXTMODE_COLS - 2);
+                        tmp[TEXTMODE_COLS - 2] = '\0';
+                        draw_text(tmp, 1, per_page + 1, 11, 1);
+                        snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024,
+                                 offset + i + 1,
+                                 total_files);
+                        draw_text(tmp, 2, per_page + 1, 14, 3);
+                    }
+
+                    const auto len = strlen(item.filename);
+                    color = item.is_directory ? 15 : color;
+                    color = item.is_executable ? 10 : color;
+                    //color = strstr((char *)rom_filename, item.filename) != nullptr ? 13 : color;
+
+                    memset(tmp, ' ', TEXTMODE_COLS - 2);
+                    tmp[TEXTMODE_COLS - 2] = '\0';
+                    memcpy(&tmp, item.filename, len < TEXTMODE_COLS - 2 ? len : TEXTMODE_COLS - 2);
+                }
+                else {
+                    memset(tmp, ' ', TEXTMODE_COLS - 2);
+                }
+                draw_text(tmp, 1, i + 1, color, bg_color);
+            }
         }
     }
 }
@@ -781,7 +789,6 @@ void menu() {
                 graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
                 palette[i][j] = i * 4 + j;
             }
-
     }
 
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
@@ -793,12 +800,8 @@ int main() {
     sleep_ms(10);
     set_sys_clock_khz(378 * KHZ, true);
 
-    memset(&SCREEN[0][0], 0, sizeof SCREEN);
-
     ps2kbd.init_gpio();
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
-
-    sleep_ms(50);
 
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_core);
@@ -812,7 +815,6 @@ int main() {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
-
 
     // Initialize I2S sound driver
     i2s_config_t i2s_config = i2s_get_default_config();
@@ -829,7 +831,7 @@ int main() {
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gb\0,gbc");
+        filebrowser(HOME_DIR, "gb");
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
 
         /* Initialise GB context. */
@@ -838,7 +840,6 @@ int main() {
 
         if (ret != GB_INIT_NO_ERROR) {
             while (1) draw_text("error", 1, 1, 1, 2);
-            sleep_ms(100);
         }
 
         /* Automatically assign a colour palette to the game */
@@ -850,12 +851,13 @@ int main() {
             manual_assign_palette(palette16, manual_palette_selected);
         }
 
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
-                palette[i][j] = i * 4 + j;
-            }
-                //palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
+        if (!gb.cgb.cgbMode)
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 4; j++) {
+                    graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
+                    palette[i][j] = i * 4 + j;
+                }
+        //palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
 
         gb_init_lcd(&gb, &lcd_draw_line);
         /* Load Save File. */

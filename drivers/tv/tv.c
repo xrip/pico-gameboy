@@ -480,6 +480,7 @@ static void __scratch_x("tv_main_loop") main_video_loopTV() {
                         }
                 }
                 else*/
+                if (graphics_buffer.data)
                 switch (graphics_mode) {
                     default:
                     case GRAPHICSMODE_DEFAULT: {
@@ -883,10 +884,8 @@ void graphics_init() {
 }
 
 void clrScr(const uint8_t color) {
-    uint16_t* t_buf = (uint16_t *)text_buffer;
-    int size = TEXTMODE_COLS * TEXTMODE_ROWS;
-
-    while (size--) *t_buf++ = color << 4 | ' ';
+    if (text_buffer)
+        memset(text_buffer, color, TEXTMODE_COLS * TEXTMODE_ROWS * 2);
 }
 
 
