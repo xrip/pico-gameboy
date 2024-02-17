@@ -385,9 +385,9 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
 
     multicore_lockout_start_blocking();
     auto flash_target_offset = FLASH_TARGET_OFFSET;
-    // const uint32_t ints = save_and_disable_interrupts();
+    const uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(flash_target_offset, fileinfo.fsize);
-    // restore_interrupts(ints);
+    restore_interrupts(ints);
 
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
         uint8_t buffer[FLASH_PAGE_SIZE];
