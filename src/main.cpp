@@ -79,9 +79,9 @@ static FATFS fs;
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 
 #if TFT
-#define convertRGB565toRGB222(rgb565) (rgb565)
+#define RGB565_TO_RGB888(rgb565) (rgb565)
 #else
-#define convertRGB565toRGB222(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
+#define RGB565_TO_RGB888(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
 #endif
 
 typedef uint32_t palette222_t[3][4];
@@ -253,7 +253,6 @@ void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], c
             SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
     }
 }
-
 
 /**
  * Load a save file from the SD card
@@ -769,7 +768,7 @@ void menu() {
 
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
+                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
                 palette[i][j] = i * 4 + j;
             }
     }
@@ -837,7 +836,7 @@ int main() {
         if (!gb.cgb.cgbMode)
             for (int i = 0; i < 3; i++)
                 for (int j = 0; j < 4; j++) {
-                    graphics_set_palette(i * 4 + j, convertRGB565toRGB222(palette16[i][j]));
+                    graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
                     palette[i][j] = i * 4 + j;
                 }
         //palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
