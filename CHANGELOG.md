@@ -2,6 +2,7 @@
 - VGA / HDMI / TFT / TV Composite outputs added
 - new filebrowser
 - speed improvements and optimizations
+- quality I2S sound output via TDA1387 or PCM5102 added
 
 Toxic palette fix
 
