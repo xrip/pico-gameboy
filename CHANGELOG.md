@@ -1,3 +1,10 @@
+# v3.0.0
+- VGA / HDMI / TFT / TV Composite outputs added
+- new filebrowser
+- speed improvements and optimizations
+
+Toxic palette fix
+
 # v2.2.0a
 
 Toxic palette fix
