@@ -258,7 +258,7 @@ void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], c
  * Load a save file from the SD card
  */
 void read_cart_ram_file(struct gb_s* gb) {
-    char filename[16];
+    char filename[24];
     uint_fast32_t save_size;
     UINT br;
 
@@ -647,10 +647,10 @@ bool save() {
     gb_get_rom_name(&gb, filename);
 
     if (save_slot) {
-        sprintf(pathname, "GB\\%s_%d.save", filename, save_slot);
+        sprintf(pathname, "%s\\%s_%d.save", HOME_DIR, filename, save_slot);
     }
     else {
-        sprintf(pathname, "GB\\%s.save", filename);
+        sprintf(pathname, "%s\\%s.save", HOME_DIR, filename);
     }
 
     FRESULT fr = f_mount(&fs, "", 1);
