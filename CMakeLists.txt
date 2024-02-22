@@ -50,7 +50,7 @@ pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
 set(FAMILY rp2040)
 set(BOARD pico_sdk)
 
-pico_set_program_name(gameboy-color "GameBody Emulator by xrip")
+pico_set_program_name(gameboy-color "Gameboy Emulator by xrip")
 pico_set_program_version(gameboy-color "test")
 
 target_include_directories(${PROJECT_NAME} PRIVATE

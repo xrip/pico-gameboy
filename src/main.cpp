@@ -345,8 +345,8 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-bool isExecutable(const char pathname[255],const char *extensions) {
-    char *pathCopy = strdup(pathname);
+bool isExecutable(const char pathname[255], const char* extensions) {
+    char* pathCopy = strdup(pathname);
     const char* token = strtok(pathCopy, ".");
     while (token != NULL) {
         if (strstr(extensions, token) != NULL) {
@@ -620,33 +620,39 @@ enum menu_type_e {
     RETURN,
 };
 
+typedef bool (*menu_callback_t)();
+
 typedef struct __attribute__((__packed__)) {
     const char* text;
     menu_type_e type;
     const void* value;
+    menu_callback_t callback;
     uint8_t max_value;
-    char value_list[5][10];
+    char value_list[15][10];
 } MenuItem;
 
-const MenuItem menu_items[] = {
-    //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
-    //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
-    { "Palette: %i ", INT, &manual_palette_selected, 12 },
-    {},
-    { "Save state", SAVE },
-    { "Load state", LOAD },
-    {},
-    { "Reset to ROM select", ROM_SELECT },
-    { "Return to game", RETURN }
-};
-#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
+int save_slot = 0;
+uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+uint8_t frequency_index = 0;
 
-void save() {
+bool overclock() {
+    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
+    sleep_ms(10);
+    return set_sys_clock_khz(frequencies[frequency_index] * KHZ, true);
+}
+
+bool save() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
 
-    sprintf(pathname, "GB\\%s.save", filename);
+    if (save_slot) {
+        sprintf(pathname, "GB\\%s_%d.save", filename, save_slot);
+    }
+    else {
+        sprintf(pathname, "GB\\%s.save", filename);
+    }
+
     FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
     fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
@@ -655,14 +661,22 @@ void save() {
     f_write(&fd, &gb, sizeof(gb), &bw);
     f_write(&fd, ram, sizeof(ram), &bw);
     f_close(&fd);
+
+    return true;
 }
 
-void load() {
+bool load() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
 
-    sprintf(pathname, "GB\\%s.save", filename);
+    if (save_slot) {
+        sprintf(pathname, "GB\\%s_%d.save", filename, save_slot);
+    }
+    else {
+        sprintf(pathname, "GB\\%s.save", filename);
+    }
+
     FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
     fr = f_open(&fd, pathname, FA_READ);
@@ -671,7 +685,29 @@ void load() {
     f_read(&fd, &gb, sizeof(gb), &br);
     f_read(&fd, ram, sizeof(ram), &br);
     f_close(&fd);
+
+    return true;
 }
+
+const MenuItem menu_items[] = {
+    //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+    //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+    { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
+    {},
+    {
+        "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies),
+        { "378", "396", "404", "408", "412", "416", "420", "424", "433" }
+    },
+    { "Press START / Enter to apply" },
+    {},
+    { "Save state %i", INT, &save_slot, &save, 5 },
+    { "Load state %i", INT, &save_slot, &load, 5 },
+    {},
+    { "Reset to ROM select", ROM_SELECT },
+    { "Return to game", RETURN }
+};
+#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
+
 
 void menu() {
     bool exit = false;
@@ -720,18 +756,6 @@ void menu() {
                             }
                         }
                         break;
-                    case SAVE:
-                        if (gamepad_bits.start || keyboard_bits.start) {
-                            save();
-                            exit = true;
-                        }
-                        break;
-                    case LOAD:
-                        if (gamepad_bits.start || keyboard_bits.start) {
-                            load();
-                            exit = true;
-                        }
-                        break;
                     case RETURN:
                         if (gamepad_bits.start || keyboard_bits.start)
                             exit = true;
@@ -743,6 +767,12 @@ void menu() {
                             return;
                         }
                         break;
+                    default:
+                        break;
+                }
+
+                if (nullptr != item->callback && (gamepad_bits.start || keyboard_bits.start)) {
+                    exit = item->callback();
                 }
             }
             static char result[TEXTMODE_COLS];
@@ -756,6 +786,8 @@ void menu() {
                 case TEXT:
                     snprintf(result, TEXTMODE_COLS, item->text, item->value);
                     break;
+                case NONE:
+                    color = 7;
                 default:
                     snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
@@ -778,9 +810,7 @@ void menu() {
 
 
 int main() {
-    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
-    sleep_ms(10);
-    set_sys_clock_khz(378 * KHZ, true);
+    overclock();
 
     ps2kbd.init_gpio();
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
@@ -861,10 +891,46 @@ int main() {
             //gb.direct.joypad = nespad_state;
             //------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
-            if (!gb.direct.joypad_bits.select && !gb.direct.joypad_bits.start) {
-                menu();
+            if (!(gb.direct.joypad & 0b00001100) || snespad_state & DPAD_X) {
+
+                static int keydown_counter = 0;
+                char romname[24];
+
+                gb_get_rom_name(&gb, romname);
+
+                if (nullptr != strstr(romname, "ZELDA")) {
+                    if (keydown_counter++ > 100) {
+                        menu();
+                        keydown_counter = 0;
+                    }
+                }
+
+                else {
+                    menu();
+                }
+
                 continue;
             }
+            // TODO F2
+            if ((snespad_state & DPAD_RT)) {
+                // wait for release to prevent cycle
+                while (snespad_state & DPAD_RT) {
+                    sleep_ms(500);
+                }
+                load();
+                continue;
+            }
+
+            // TODO F3
+            if ((snespad_state & DPAD_LT)) {
+                // wait for release to prevent cycle
+                while (snespad_state & DPAD_LT) {
+                    sleep_ms(500);
+                }
+                save();
+                continue;
+            }
+
             //-----------------------------------------------------------------
             gb_run_frame(&gb);
 

@@ -7,7 +7,7 @@ static const uint16_t nespad_program_instructions[] = {
     //     .wrap_target
     0x80a0, //  0: pull   block  
     0xea01, //  1: set    pins, 1         side 0 [10]
-    0xe027, //  2: set    x, 7            side 0
+    0xe02f, //  2: set    x, 15           side 0
     0xe000, //  3: set    pins, 0         side 0
     0x4402, //  4: in     pins, 2         side 0 [4]      <--- 2
     0xf500, //  5: set    pins, 0         side 1 [5]
@@ -32,6 +32,7 @@ static PIO pio = pio1;
 static uint8_t sm = -1;
 uint8_t nespad_state  = 0;  // Joystick 1
 uint8_t nespad_state2 = 0;  // Joystick 2
+uint8_t snespad_state = 0;  // SNES Joystick
 
 bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latPin) {
   if (pio_can_add_program(pio, &nespad_program) &&
@@ -54,7 +55,7 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
                                  (1 << clkPin) | (1 << latPin) | 
                                  (1 << dataPin) | (1 << (dataPin+1))
                                 ); // All pins
-    sm_config_set_in_shift(&c, true, true, 16); // R shift, autopush @ 8 bits (@ 16 bits for 2 Joystick)
+    sm_config_set_in_shift(&c, true, true, 32); // R shift, autopush @ 8 bits (@ 16 bits for 2 Joystick)
 
     sm_config_set_clkdiv_int_frac(&c, cpu_khz / 1000, 0); // 1 MHz clock
 
@@ -87,7 +88,9 @@ void nespad_read()
 
   // Right-shift was used in sm config so bit order matches NES controller
   // bits used elsewhere in picones, but does require shifting down...
-  uint16_t temp16=((pio->rxf[sm])>>16)^ 0xFFFF;
+  uint32_t temp16=((pio->rxf[sm]))^ 0xFFFFFFFF;
+  snespad_state = (temp16 >> 16) & 0xFF;
+
   pio->txf[sm]=0;
   uint16_t temp1, temp2;
   // temp1  = temp16 & 0x5555;             // 08070605.04030201
@@ -97,7 +100,7 @@ void nespad_read()
   // return;
 
 
-// 1 -------------------------------------------------------  
+// 1 -------------------------------------------------------
   temp1  = temp16 & 0x5555;             // 08070605.04030201
   temp2  = temp16 & 0xAAAA;             // 80706050.40302010
   temp16 = temp16 & 0xAA55;             // 80706050.04030201
