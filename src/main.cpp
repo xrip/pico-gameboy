@@ -632,7 +632,7 @@ typedef struct __attribute__((__packed__)) {
 } MenuItem;
 
 int save_slot = 0;
-uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 432 };
 uint8_t frequency_index = 0;
 
 bool overclock() {
@@ -695,8 +695,8 @@ const MenuItem menu_items[] = {
     { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
     {},
     {
-        "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies),
-        { "378", "396", "404", "408", "412", "416", "420", "424", "433" }
+        "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
+        { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
     },
     { "Press START / Enter to apply" },
     {},
