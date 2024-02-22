@@ -908,7 +908,8 @@ int main() {
                 gb_get_rom_name(&gb, romname);
 
                 if (nullptr != strstr(romname, "ZELDA")) {
-                    if (keydown_counter++ > 50) {
+                    // half a second
+                    if (keydown_counter++ > 30) {
                         menu();
                         keydown_counter = 0;
                     }
