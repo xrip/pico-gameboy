@@ -694,15 +694,14 @@ const MenuItem menu_items[] = {
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
     {},
-    {
-        "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-        { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
-    },
-    { "Press START / Enter to apply" },
-    {},
-    { "Save state %i", INT, &save_slot, &save, 5 },
-    { "Load state %i", INT, &save_slot, &load, 5 },
-    {},
+    { "Save state: %i", INT, &save_slot, &save, 5 },
+    { "Load state: %i", INT, &save_slot, &load, 5 },
+{},
+{
+    "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
+    { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
+},
+{ "Press START / Enter to apply", NONE },
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
@@ -721,17 +720,6 @@ void menu() {
     uint current_item = 0;
 
     while (!exit) {
-        sleep_ms(25);
-        if (gamepad_bits.down || keyboard_bits.down) {
-            current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
-            if (menu_items[current_item].type == NONE)
-                current_item++;
-        }
-        if (gamepad_bits.up || keyboard_bits.up) {
-            current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
-            if (menu_items[current_item].type == NONE)
-                current_item--;
-        }
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
             uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
             uint8_t x = TEXTMODE_COLS / 2 - 10;
@@ -787,13 +775,27 @@ void menu() {
                     snprintf(result, TEXTMODE_COLS, item->text, item->value);
                     break;
                 case NONE:
-                    color = 7;
+                    color = 6;
                 default:
                     snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
             draw_text(result, x, y, color, bg_color);
         }
-        sleep_ms(100);
+
+        if (gamepad_bits.down || keyboard_bits.down) {
+            current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
+
+            if (menu_items[current_item].type == NONE)
+                current_item++;
+        }
+        if (gamepad_bits.up || keyboard_bits.up) {
+            current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
+
+            if (menu_items[current_item].type == NONE)
+                current_item--;
+        }
+
+        sleep_ms(125);
     }
     if (manual_palette_selected > 0) {
         manual_assign_palette(palette16, manual_palette_selected);
