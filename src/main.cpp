@@ -908,7 +908,7 @@ int main() {
                 gb_get_rom_name(&gb, romname);
 
                 if (nullptr != strstr(romname, "ZELDA")) {
-                    if (keydown_counter++ > 100) {
+                    if (keydown_counter++ > 50) {
                         menu();
                         keydown_counter = 0;
                     }
@@ -917,8 +917,6 @@ int main() {
                 else {
                     menu();
                 }
-
-                continue;
             }
             // TODO F2
             if ((snespad_state & DPAD_RT)) {
@@ -927,7 +925,6 @@ int main() {
                     sleep_ms(500);
                 }
                 load();
-                continue;
             }
 
             // TODO F3
@@ -937,7 +934,6 @@ int main() {
                     sleep_ms(500);
                 }
                 save();
-                continue;
             }
 
             //-----------------------------------------------------------------
