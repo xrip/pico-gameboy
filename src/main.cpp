@@ -345,9 +345,16 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-bool isExecutable(const char pathname[255], const char* extensions) {
-    char* pathCopy = strdup(pathname);
-    const char* token = strtok(pathCopy, ".");
+bool isExecutable(const char pathname[255],const char *extensions) {
+    char *pathCopy = strdup(pathname);
+    const char* token = strrchr(pathCopy, '.');
+
+    if (token == nullptr) {
+        return false;
+    }
+
+    token++;
+
     while (token != NULL) {
         if (strstr(extensions, token) != NULL) {
             free(pathCopy);

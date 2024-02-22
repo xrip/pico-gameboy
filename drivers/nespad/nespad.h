@@ -10,7 +10,7 @@
 #define DPAD_A 0x01
 
 
-#define DPAD_X (0x04 | 0x04 << 1)
+#define DPAD_X  (0x04 | 0x04 << 1)
 #define DPAD_LT (0x10 | 0x10 << 1)
 #define DPAD_RT (0x40 | 0x40 << 1)
 
