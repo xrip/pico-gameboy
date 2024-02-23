@@ -900,7 +900,7 @@ int main() {
             //gb.direct.joypad = nespad_state;
             //------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
-            if (!(gb.direct.joypad & 0b00001100) || snespad_state & DPAD_X) {
+            if (!(gb.direct.joypad & 0b00001100) || nespad_state & DPAD_X) {
 
                 static int keydown_counter = 0;
                 char romname[24];
@@ -920,18 +920,18 @@ int main() {
                 }
             }
             // TODO F2
-            if ((snespad_state & DPAD_RT)) {
+            if ((nespad_state & DPAD_RT)) {
                 // wait for release to prevent cycle
-                while (snespad_state & DPAD_RT) {
+                while (nespad_state & DPAD_RT) {
                     sleep_ms(500);
                 }
                 load();
             }
 
             // TODO F3
-            if ((snespad_state & DPAD_LT)) {
+            if ((nespad_state & DPAD_LT)) {
                 // wait for release to prevent cycle
-                while (snespad_state & DPAD_LT) {
+                while (nespad_state & DPAD_LT) {
                     sleep_ms(500);
                 }
                 save();
