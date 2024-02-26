@@ -198,7 +198,7 @@ void __time_critical_func(render_core)() {
 #if VGA
     graphics_set_offset(60, 6);
 #endif
-#if HDMI | TV
+#if HDMI | TV | SOFTTV
     graphics_set_offset(80, 48);
 #endif
 
