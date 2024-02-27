@@ -1,3 +1,6 @@
+# v3.0.1
+- Software TV composite output instead of hardware ntsc/pal encoder
+
 # v3.0.0
 - VGA / HDMI / TFT / TV Composite outputs added
 - new filebrowser
