@@ -64,7 +64,7 @@
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
 #define HOME_DIR (char*)"\\GB"
-#define FLASH_TARGET_OFFSET (128 * 1024)
+#define FLASH_TARGET_OFFSET (256 * 1024)
 const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
 
 static uint8_t ram[32768];
@@ -695,7 +695,31 @@ bool load() {
 
     return true;
 }
+#if SOFTTV
+typedef struct tv_out_mode_t {
+    // double color_freq;
+    float color_index;
+    COLOR_FREQ_t c_freq;
+    enum graphics_mode_t mode_bpp;
+    g_out_TV_t tv_system;
+    NUM_TV_LINES_t N_lines;
+    bool cb_sync_PI_shift_lines;
+    bool cb_sync_PI_shift_half_frame;
+} tv_out_mode_t;
+extern tv_out_mode_t tv_out_mode;
 
+bool color_mode=true;
+bool toggle_color() {
+    color_mode=!color_mode;
+    if(color_mode) {
+        tv_out_mode.color_index= 1.0f;
+    } else {
+        tv_out_mode.color_index= 0.0f;
+    }
+
+    return true;
+}
+#endif
 const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -703,7 +727,16 @@ const MenuItem menu_items[] = {
     {},
     { "Save state: %i", INT, &save_slot, &save, 5 },
     { "Load state: %i", INT, &save_slot, &load, 5 },
-{},
+#if SOFTTV
+    { "" },
+    { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
+    { "TV Lines %s", ARRAY, &tv_out_mode.N_lines, nullptr, 3, { "624", "625", "524", "525" } },
+    { "Freq %s", ARRAY, &tv_out_mode.c_freq, nullptr, 1, { "3.579545", "4.433619" } },
+    { "Colors: %s", ARRAY, &color_mode, &toggle_color, 1, { "NO ", "YES" } },
+    { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
+    { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
+#endif
+    {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
     { "378", "396", "404", "408", "412", "416", "420", "424", "432" }

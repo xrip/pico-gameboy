@@ -30,7 +30,7 @@ typedef struct tv_out_mode_t {
 } tv_out_mode_t;
 
 //параметры по умолчанию
-static tv_out_mode_t tv_out_mode = {
+tv_out_mode_t tv_out_mode = {
     .tv_system = g_TV_OUT_NTSC,
     .N_lines = _525_lines,
     .mode_bpp = GRAPHICSMODE_DEFAULT,
@@ -1231,8 +1231,8 @@ void clrScr(const uint8_t color) {
 
 void graphics_set_mode(const enum graphics_mode_t mode) {
     tv_out_mode.mode_bpp = mode;
-    tv_out_mode.color_index = TEXTMODE_DEFAULT == mode ? 0.0 : 1.0;
-    tv_out_mode.cb_sync_PI_shift_lines = TEXTMODE_DEFAULT == mode ? true : false;
+    // tv_out_mode.color_index = TEXTMODE_DEFAULT == mode ? 0.0 : 1.0;
+    // tv_out_mode.cb_sync_PI_shift_lines = TEXTMODE_DEFAULT == mode ? true : false;
     graphics_set_modeTV(tv_out_mode);
     clrScr(0);
 }

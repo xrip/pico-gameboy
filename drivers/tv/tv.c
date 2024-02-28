@@ -855,14 +855,15 @@ void tv_init(const output_format_e output_format) {
     dma_start_channel_mask(1u << dma_chan_ctrl);
 
     int hz = 50000;
-    if (!add_repeating_timer_us(1000000 / hz, video_timer_callbackTV, NULL, &video_timer)) {
+
+    if (!alarm_pool_add_repeating_timer_us(alarm_pool_create(2, 16),1000000 / hz, video_timer_callbackTV, NULL, &video_timer)) {
         return;
     }
 };
 
 
 void graphics_init() {
-    tv_init(TV_OUT_PAL);
+    tv_init(TV_OUT_NTSC);
 
     // FIXME сделать конфигурацию пользователем
     graphics_set_palette(200, RGB888(0x00, 0x00, 0x00)); //black
