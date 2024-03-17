@@ -64,8 +64,9 @@
  * Game Boy DMG ROM size ranges from 32768 bytes (e.g. Tetris) to 1,048,576 bytes (e.g. Pokemod Red)
  */
 #define HOME_DIR (char*)"\\GB"
-#define FLASH_TARGET_OFFSET (256 * 1024)
-const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
+extern char __flash_binary_end;
+#define FLASH_TARGET_OFFSET (((((uintptr_t)&__flash_binary_end - XIP_BASE) / FLASH_SECTOR_SIZE) + 4) * FLASH_SECTOR_SIZE)
+static const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
 
 static uint8_t ram[32768];
 
@@ -87,7 +88,7 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
-static uint8_t manual_palette_selected = 0;
+static uint8_t manual_palette_selected = 7;
 
 struct input_bits_t {
     bool a: true;
@@ -881,7 +882,7 @@ int main() {
     audio_init();
 
     while (true) {
-        manual_palette_selected = 0;
+        manual_palette_selected = 7;
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
