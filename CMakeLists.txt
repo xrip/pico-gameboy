@@ -93,17 +93,9 @@ ENDIF()
 IF(NOT I2S)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM)
 ELSEIF(I2S_CS4334)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
-            AUDIO_DATA_PIN=26
-            AUDIO_CLOCK_PIN=27
-    )
     target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
     SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
 ELSE()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
-            AUDIO_DATA_PIN=26
-            AUDIO_CLOCK_PIN=27
-    )
     SET(BUILD_NAME "${BUILD_NAME}-I2S-TDA1387")
 ENDIF()
 
