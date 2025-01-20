@@ -91,7 +91,7 @@ ELSE()
 ENDIF()
 
 IF(NOT I2S)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM_PIN=26)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM)
 ELSEIF(I2S_CS4334)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
             AUDIO_DATA_PIN=26

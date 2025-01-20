@@ -34,3 +34,12 @@
 #define TFT_DC_PIN 16
 #define TFT_DATA_PIN 18
 #define TFT_CLK_PIN 19
+
+
+// Sound
+#if defined(AUDIO_PWM)
+#define AUDIO_PWM_PIN 9
+#else
+#define AUDIO_DATA_PIN 9
+#define AUDIO_CLOCK_PIN 10
+#endif

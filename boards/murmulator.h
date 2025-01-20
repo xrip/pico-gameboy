@@ -34,3 +34,12 @@
 #define TFT_DATA_PIN 12
 #define TFT_CLK_PIN 13
 
+
+// Sound
+#if defined(AUDIO_PWM)
+#define AUDIO_PWM_PIN 26
+#else
+// I2S Sound
+#define AUDIO_DATA_PIN 26
+#define AUDIO_CLOCK_PIN 27
+#endif
