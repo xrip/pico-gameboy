@@ -21,7 +21,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops -ffast-math -feliminate-u
 
 pico_sdk_init()
 
-set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
+set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${PICO_PLATFORM}/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
@@ -93,9 +93,17 @@ ENDIF()
 IF(NOT I2S)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM_PIN=26)
 ELSEIF(I2S_CS4334)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+            AUDIO_DATA_PIN=26
+            AUDIO_CLOCK_PIN=27
+    )
     target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
     SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
 ELSE()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+            AUDIO_DATA_PIN=26
+            AUDIO_CLOCK_PIN=27
+    )
     SET(BUILD_NAME "${BUILD_NAME}-I2S-TDA1387")
 ENDIF()
 
@@ -122,6 +130,40 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         tinyusb_device
 )
 
+if (PICO_PLATFORM EQUAL "rp2350-arm-s")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+            # 16MB flash
+            PICO_FLASH_SIZE_BYTES=16777216
+
+            # SDCARD
+            SDCARD_PIN_SPI0_CS=5
+            SDCARD_PIN_SPI0_SCK=6
+            SDCARD_PIN_SPI0_MOSI=7
+            SDCARD_PIN_SPI0_MISO=4
+
+            # PS2KBD
+            PS2KBD_GPIO_FIRST=2
+
+            # NES Gamepad
+            NES_GPIO_CLK=20
+            NES_GPIO_DATA=26
+            NES_GPIO_LAT=21
+
+            # VGA 8 pins starts from pin:
+            VGA_BASE_PIN=12
+
+            # HDMI 8 pins starts from pin:
+            HDMI_BASE_PIN=12
+
+            # TFT
+            TFT_CS_PIN=12
+            TFT_RST_PIN=14
+            TFT_LED_PIN=15
+            TFT_DC_PIN=16
+            TFT_DATA_PIN=18
+            TFT_CLK_PIN=19
+    )
+else()
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         # 16MB flash
         PICO_FLASH_SIZE_BYTES=16777216
@@ -154,6 +196,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
         TFT_DATA_PIN=12
         TFT_CLK_PIN=13
 )
+endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 pico_add_extra_outputs(${PROJECT_NAME})

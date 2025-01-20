@@ -19,9 +19,7 @@
 #define ENABLE_SDCARD 1
 #define USE_PS2_KBD 1
 #define USE_NESPAD 1
-#ifndef OVERCLOCKING
-#define OVERCLOCKING 270
-#endif
+
 
 /* C Headers */
 #include <cstdio>
@@ -644,9 +642,20 @@ uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 432 };
 uint8_t frequency_index = 0;
 
 bool overclock() {
-    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
+#if PICO_RP2350
+    volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
+    vreg_disable_voltage_limit();
+    vreg_set_voltage(VREG_VOLTAGE_1_40);
     sleep_ms(10);
+    *qmi_m0_timing = 0x60007204;
+    set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);
+    *qmi_m0_timing = 0x60007303;
+    return true;
+#else
+    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
+    sleep_ms(33);
     return set_sys_clock_khz(frequencies[frequency_index] * KHZ, true);
+#endif
 }
 
 bool save() {
@@ -737,6 +746,8 @@ const MenuItem menu_items[] = {
     { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
     { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
 #endif
+#ifdef VGA
+#endif
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
@@ -746,7 +757,7 @@ const MenuItem menu_items[] = {
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
-#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
+#define MENU_ITEMS_NUMBER count_of(menu_items)
 
 
 void menu() {
