@@ -99,6 +99,7 @@ struct input_bits_t {
     bool down: true;
 };
 
+uint8_t swap_ab = 0;
 static input_bits_t keyboard = { false, false, false, false, false, false, false, false }; //Keyboard
 static input_bits_t gamepad_bits = { false, false, false, false, false, false, false, false }; //Joypad
 //-----------------------------------------------------------------------------
@@ -106,8 +107,13 @@ static input_bits_t gamepad_bits = { false, false, false, false, false, false, f
 void nespad_tick() {
     nespad_read();
 
-    gamepad_bits.a = keyboard.a || (nespad_state & DPAD_A) != 0;
-    gamepad_bits.b = keyboard.b || (nespad_state & DPAD_B) != 0;
+    if (swap_ab) {
+        gamepad_bits.b = keyboard.a || (nespad_state & DPAD_A) != 0;
+        gamepad_bits.a = keyboard.b || (nespad_state & DPAD_B) != 0;
+    } else {
+        gamepad_bits.a = keyboard.a || (nespad_state & DPAD_A) != 0;
+        gamepad_bits.b = keyboard.b || (nespad_state & DPAD_B) != 0;
+    }
     gamepad_bits.select = keyboard.select || (nespad_state & DPAD_SELECT) != 0;
     gamepad_bits.start = keyboard.start || (nespad_state & DPAD_START) != 0;
     gamepad_bits.up = keyboard.up || (nespad_state & DPAD_UP) != 0;
@@ -739,6 +745,7 @@ bool toggle_color() {
 const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
+    { "Swap AB <> BA: %s", ARRAY, &swap_ab,  nullptr, 1, {"NO ", "YES"}},
     { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
     {},
     { "Save state: %i", INT, &save_slot, &save, 5 },
