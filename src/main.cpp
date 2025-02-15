@@ -134,9 +134,9 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
     return false;
 }
 
-static int save_slot = 0;
-static bool load();
-static bool save();
+static volatile bool altPressed = false;
+static volatile bool ctrlPressed = false;
+static volatile uint8_t fxPressedV = 0;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -160,8 +160,8 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
     keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
 
-    bool altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
-    bool ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
+    altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
+    ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
         watchdog_enable(10, true);
@@ -169,25 +169,17 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
             tight_loop_contents();
         }
     }
-    if (ctrlPressed) { // save
-        if (isInReport(report, HID_KEY_F1)) { save_slot = 1; save(); }
-        if (isInReport(report, HID_KEY_F2)) { save_slot = 2; save(); }
-        if (isInReport(report, HID_KEY_F3)) { save_slot = 3; save(); }
-        if (isInReport(report, HID_KEY_F4)) { save_slot = 4; save(); }
-        if (isInReport(report, HID_KEY_F5)) { save_slot = 5; save(); }
-        if (isInReport(report, HID_KEY_F6)) { save_slot = 6; save(); }
-        if (isInReport(report, HID_KEY_F7)) { save_slot = 7; save(); }
-        if (isInReport(report, HID_KEY_F8)) { save_slot = 8; save(); }
-    }
-    if (altPressed) { // restore
-        if (isInReport(report, HID_KEY_F1)) { save_slot = 1; load(); }
-        if (isInReport(report, HID_KEY_F2)) { save_slot = 2; load(); }
-        if (isInReport(report, HID_KEY_F3)) { save_slot = 3; load(); }
-        if (isInReport(report, HID_KEY_F4)) { save_slot = 4; load(); }
-        if (isInReport(report, HID_KEY_F5)) { save_slot = 5; load(); }
-        if (isInReport(report, HID_KEY_F6)) { save_slot = 6; load(); }
-        if (isInReport(report, HID_KEY_F7)) { save_slot = 7; load(); }
-        if (isInReport(report, HID_KEY_F8)) { save_slot = 8; load(); }
+    if (ctrlPressed || altPressed) {
+        uint8_t fxPressed = 0;
+        if (isInReport(report, HID_KEY_F1)) fxPressed = 1;
+        else if (isInReport(report, HID_KEY_F2)) fxPressed = 2;
+        else if (isInReport(report, HID_KEY_F3)) fxPressed = 3;
+        else if (isInReport(report, HID_KEY_F4)) fxPressed = 4;
+        else if (isInReport(report, HID_KEY_F5)) fxPressed = 5;
+        else if (isInReport(report, HID_KEY_F6)) fxPressed = 6;
+        else if (isInReport(report, HID_KEY_F7)) fxPressed = 7;
+        else if (isInReport(report, HID_KEY_F8)) fxPressed = 8;
+        fxPressedV = fxPressed;
     }
 }
 
@@ -677,8 +669,9 @@ typedef struct __attribute__((__packed__)) {
     char value_list[15][15];
 } MenuItem;
 
-uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
-uint8_t frequency_index = 0;
+static int save_slot = 0;
+static uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+static uint8_t frequency_index = 0;
 
 bool overclock() {
 #if PICO_RP2350
@@ -1014,7 +1007,15 @@ int main() {
         //=============================================================================
         while (!restart) {
             //------------------------------------------------------------------------------
-
+            if (fxPressedV) {
+                if (altPressed) {
+                    save_slot = fxPressedV;
+                    load();
+                } else if (ctrlPressed) {
+                    save_slot = fxPressedV;
+                    save();
+                }
+            }
             gb.direct.joypad_bits.up = !gamepad_bits.up;
             gb.direct.joypad_bits.down = !gamepad_bits.down;
             gb.direct.joypad_bits.left = !gamepad_bits.left;
