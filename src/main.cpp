@@ -276,14 +276,8 @@ void read_cart_ram_file(struct gb_s* gb) {
     gb_get_rom_name(gb, filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
-        FRESULT fr = f_mount(&fs, "", 1);
-        if (FR_OK != fr) {
-            printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
-            return;
-        }
-
         FIL fil;
-        fr = f_open(&fil, filename, FA_READ);
+        FRESULT fr = f_open(&fil, filename, FA_READ);
         if (fr == FR_OK) {
             f_read(&fil, ram, f_size(&fil), &br);
         }
@@ -786,6 +780,26 @@ const MenuItem menu_items[] = {
 };
 #define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
+static void f_load_conf(void) {
+    FIL f;
+    if (f_open(&f, "/GB/gb.conf", FA_READ) == FR_OK) {
+        UINT br;
+        f_read(&f, &swap_ab, 1, &br);
+        f_read(&f, &manual_palette_selected, 1, &br);
+        f_close(&f);
+    }
+}
+
+static void f_save_conf(void) {
+    f_mkdir("/GB"); // ничего не делает, если она уже есть
+    FIL f;
+    if (f_open(&f, "/GB/gb.conf", FA_CREATE_NEW | FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+        UINT br;
+        f_write(&f, &swap_ab, 1, &br);
+        f_write(&f, &manual_palette_selected, 1, &br);
+        f_close(&f);
+    }
+}
 
 void menu() {
     bool exit = false;
@@ -887,10 +901,9 @@ void menu() {
             graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
             palette[i][j] = i * 4 + j;
         }
-
+    f_save_conf();
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
-
 
 int main() {
     overclock();
@@ -921,13 +934,21 @@ int main() {
     // Initialize audio emulation
     audio_init();
 
-    while (true) {
-        manual_palette_selected = 0;
-        /* ROM File selector */
+    FRESULT fr = f_mount(&fs, "", 1);
+    if (FR_OK != fr) {
+        printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
+        /// TODO: error handling
+    } else {
+        f_load_conf();
+    }
 
-        graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gbc,gb");
-        graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    while (true) {
+        /* ROM File selector */
+        if (FR_OK == fr) {
+            graphics_set_mode(TEXTMODE_DEFAULT);
+            filebrowser(HOME_DIR, "gbc,gb");
+            graphics_set_mode(GRAPHICSMODE_DEFAULT);
+        }
 
         /* Initialise GB context. */
         gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
