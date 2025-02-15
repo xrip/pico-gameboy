@@ -134,6 +134,10 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
     return false;
 }
 
+static int save_slot = 0;
+static bool load();
+static bool save();
+
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
     /*    printf("HID key report modifiers %2.2X report ", report->modifier);
@@ -156,14 +160,34 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
     keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
 
-    if ((isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT)) &&
-        (isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT)) &&
-        isInReport(report, HID_KEY_DELETE)
-    ) {
+    bool altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
+    bool ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
+    
+    if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
         watchdog_enable(10, true);
         while(true) {
             tight_loop_contents();
         }
+    }
+    if (ctrlPressed) { // save
+        if (isInReport(report, HID_KEY_F1)) { save_slot = 1; save(); }
+        if (isInReport(report, HID_KEY_F2)) { save_slot = 2; save(); }
+        if (isInReport(report, HID_KEY_F3)) { save_slot = 3; save(); }
+        if (isInReport(report, HID_KEY_F4)) { save_slot = 4; save(); }
+        if (isInReport(report, HID_KEY_F5)) { save_slot = 5; save(); }
+        if (isInReport(report, HID_KEY_F6)) { save_slot = 6; save(); }
+        if (isInReport(report, HID_KEY_F7)) { save_slot = 7; save(); }
+        if (isInReport(report, HID_KEY_F8)) { save_slot = 8; save(); }
+    }
+    if (altPressed) { // restore
+        if (isInReport(report, HID_KEY_F1)) { save_slot = 1; load(); }
+        if (isInReport(report, HID_KEY_F2)) { save_slot = 2; load(); }
+        if (isInReport(report, HID_KEY_F3)) { save_slot = 3; load(); }
+        if (isInReport(report, HID_KEY_F4)) { save_slot = 4; load(); }
+        if (isInReport(report, HID_KEY_F5)) { save_slot = 5; load(); }
+        if (isInReport(report, HID_KEY_F6)) { save_slot = 6; load(); }
+        if (isInReport(report, HID_KEY_F7)) { save_slot = 7; load(); }
+        if (isInReport(report, HID_KEY_F8)) { save_slot = 8; load(); }
     }
 }
 
@@ -653,7 +677,6 @@ typedef struct __attribute__((__packed__)) {
     char value_list[15][15];
 } MenuItem;
 
-int save_slot = 0;
 uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
 uint8_t frequency_index = 0;
 
@@ -674,7 +697,7 @@ bool overclock() {
 #endif
 }
 
-bool save() {
+static bool save() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
@@ -698,7 +721,7 @@ bool save() {
     return true;
 }
 
-bool load() {
+static bool load() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
@@ -768,8 +791,8 @@ const MenuItem menu_items[] = {
         }
     },
     {},
-    { "Save state: %i", INT, &save_slot, &save, 5 },
-    { "Load state: %i", INT, &save_slot, &load, 5 },
+    { "Save state: %i", INT, &save_slot, &save, 8 },
+    { "Load state: %i", INT, &save_slot, &load, 8 },
 #if SOFTTV
     { "" },
     { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
