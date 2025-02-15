@@ -35,7 +35,7 @@
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <sys/unistd.h>
-
+#include <hardware/watchdog.h>
 
 #include "audio.h"
 #include "minigb_apu.h"
@@ -99,7 +99,7 @@ struct input_bits_t {
     bool down: true;
 };
 
-uint8_t swap_ab = 0;
+static uint8_t swap_ab = 0;
 static input_bits_t keyboard = { false, false, false, false, false, false, false, false }; //Keyboard
 static input_bits_t gamepad_bits = { false, false, false, false, false, false, false, false }; //Joypad
 //-----------------------------------------------------------------------------
@@ -155,6 +155,16 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || isInReport(report, HID_KEY_S) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
     keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
     keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
+
+    if ((isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT)) &&
+        (isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT)) &&
+        isInReport(report, HID_KEY_DELETE)
+    ) {
+        watchdog_enable(10, true);
+        while(true) {
+            tight_loop_contents();
+        }
+    }
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
@@ -793,12 +803,11 @@ static void f_load_conf(void) {
 static void f_save_conf(void) {
     f_mkdir("/GB"); // ничего не делает, если она уже есть
     FIL f;
-    if (f_open(&f, "/GB/gb.conf", FA_CREATE_NEW | FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-        UINT br;
-        f_write(&f, &swap_ab, 1, &br);
-        f_write(&f, &manual_palette_selected, 1, &br);
-        f_close(&f);
-    }
+    f_open(&f, "/GB/gb.conf", FA_CREATE_ALWAYS | FA_WRITE);
+    UINT br;
+    f_write(&f, &swap_ab, 1, &br);
+    f_write(&f, &manual_palette_selected, 1, &br);
+    f_close(&f);
 }
 
 void menu() {
