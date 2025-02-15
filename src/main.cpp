@@ -86,7 +86,7 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
-static uint8_t manual_palette_selected = 7;
+static uint8_t manual_palette_selected = 0; // auto
 
 struct input_bits_t {
     bool a: true;
@@ -646,7 +646,7 @@ typedef struct __attribute__((__packed__)) {
     const void* value;
     menu_callback_t callback;
     uint8_t max_value;
-    char value_list[15][10];
+    char value_list[15][15];
 } MenuItem;
 
 int save_slot = 0;
@@ -746,7 +746,23 @@ const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     { "Swap AB <> BA: %s", ARRAY, &swap_ab,  nullptr, 1, {"NO ", "YES"}},
-    { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
+    { "Palette: %s ", ARRAY, &manual_palette_selected, nullptr, 12,
+        {
+            "0 - AUTO      ",
+            "1 - yellow-red",
+            "2 - orange    ",
+            "3 - negative  ",
+            "4 - dark green",
+            "5 - red       ",
+            "6 - pink      ",
+            "7 - green     ",
+            "8 - dark blue ",
+            "9 - pastel    ",
+            "10 - blue     ",
+            "11 - yellow   ",
+            "12 - DMG      "
+        }
+    },
     {},
     { "Save state: %i", INT, &save_slot, &save, 5 },
     { "Load state: %i", INT, &save_slot, &load, 5 },
@@ -759,18 +775,16 @@ const MenuItem menu_items[] = {
     { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
     { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
 #endif
-#ifdef VGA
-#endif
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-    { "378", "396", "404", "408", "412", "416", "420", "424", "433" }
+    { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
-#define MENU_ITEMS_NUMBER count_of(menu_items)
+#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
 
 void menu() {
@@ -864,13 +878,15 @@ void menu() {
     }
     if (manual_palette_selected > 0) {
         manual_assign_palette(palette16, manual_palette_selected);
-
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-                palette[i][j] = i * 4 + j;
-            }
+    } else {
+        char rom_title[16];
+        auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
     }
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++) {
+            graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
+            palette[i][j] = i * 4 + j;
+        }
 
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
@@ -906,7 +922,7 @@ int main() {
     audio_init();
 
     while (true) {
-        manual_palette_selected = 7;
+        manual_palette_selected = 0;
         /* ROM File selector */
 
         graphics_set_mode(TEXTMODE_DEFAULT);
