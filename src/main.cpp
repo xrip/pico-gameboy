@@ -35,7 +35,7 @@
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <sys/unistd.h>
-
+#include <hardware/watchdog.h>
 
 #include "audio.h"
 #include "minigb_apu.h"
@@ -86,7 +86,7 @@ uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
-static uint8_t manual_palette_selected = 7;
+static uint8_t manual_palette_selected = 0; // auto
 
 struct input_bits_t {
     bool a: true;
@@ -99,6 +99,7 @@ struct input_bits_t {
     bool down: true;
 };
 
+static uint8_t swap_ab = 0;
 static input_bits_t keyboard = { false, false, false, false, false, false, false, false }; //Keyboard
 static input_bits_t gamepad_bits = { false, false, false, false, false, false, false, false }; //Joypad
 //-----------------------------------------------------------------------------
@@ -106,8 +107,13 @@ static input_bits_t gamepad_bits = { false, false, false, false, false, false, f
 void nespad_tick() {
     nespad_read();
 
-    gamepad_bits.a = keyboard.a || (nespad_state & DPAD_A) != 0;
-    gamepad_bits.b = keyboard.b || (nespad_state & DPAD_B) != 0;
+    if (swap_ab) {
+        gamepad_bits.b = keyboard.a || (nespad_state & DPAD_A) != 0;
+        gamepad_bits.a = keyboard.b || (nespad_state & DPAD_B) != 0;
+    } else {
+        gamepad_bits.a = keyboard.a || (nespad_state & DPAD_A) != 0;
+        gamepad_bits.b = keyboard.b || (nespad_state & DPAD_B) != 0;
+    }
     gamepad_bits.select = keyboard.select || (nespad_state & DPAD_SELECT) != 0;
     gamepad_bits.start = keyboard.start || (nespad_state & DPAD_START) != 0;
     gamepad_bits.up = keyboard.up || (nespad_state & DPAD_UP) != 0;
@@ -127,6 +133,10 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
     }
     return false;
 }
+
+static volatile bool altPressed = false;
+static volatile bool ctrlPressed = false;
+static volatile uint8_t fxPressedV = 0;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -149,6 +159,28 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || isInReport(report, HID_KEY_S) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
     keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
     keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
+
+    altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
+    ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
+    
+    if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
+        watchdog_enable(10, true);
+        while(true) {
+            tight_loop_contents();
+        }
+    }
+    if (ctrlPressed || altPressed) {
+        uint8_t fxPressed = 0;
+        if (isInReport(report, HID_KEY_F1)) fxPressed = 1;
+        else if (isInReport(report, HID_KEY_F2)) fxPressed = 2;
+        else if (isInReport(report, HID_KEY_F3)) fxPressed = 3;
+        else if (isInReport(report, HID_KEY_F4)) fxPressed = 4;
+        else if (isInReport(report, HID_KEY_F5)) fxPressed = 5;
+        else if (isInReport(report, HID_KEY_F6)) fxPressed = 6;
+        else if (isInReport(report, HID_KEY_F7)) fxPressed = 7;
+        else if (isInReport(report, HID_KEY_F8)) fxPressed = 8;
+        fxPressedV = fxPressed;
+    }
 }
 
 Ps2Kbd_Mrmltr ps2kbd(
@@ -270,14 +302,8 @@ void read_cart_ram_file(struct gb_s* gb) {
     gb_get_rom_name(gb, filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
-        FRESULT fr = f_mount(&fs, "", 1);
-        if (FR_OK != fr) {
-            printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
-            return;
-        }
-
         FIL fil;
-        fr = f_open(&fil, filename, FA_READ);
+        FRESULT fr = f_open(&fil, filename, FA_READ);
         if (fr == FR_OK) {
             f_read(&fil, ram, f_size(&fil), &br);
         }
@@ -640,12 +666,12 @@ typedef struct __attribute__((__packed__)) {
     const void* value;
     menu_callback_t callback;
     uint8_t max_value;
-    char value_list[15][10];
+    char value_list[15][15];
 } MenuItem;
 
-int save_slot = 0;
-uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
-uint8_t frequency_index = 0;
+static int save_slot = 0;
+static uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+static uint8_t frequency_index = 0;
 
 bool overclock() {
 #if PICO_RP2350
@@ -664,7 +690,7 @@ bool overclock() {
 #endif
 }
 
-bool save() {
+static bool save() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
@@ -688,7 +714,7 @@ bool save() {
     return true;
 }
 
-bool load() {
+static bool load() {
     char pathname[255];
     char filename[24];
     gb_get_rom_name(&gb, filename);
@@ -739,10 +765,27 @@ bool toggle_color() {
 const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
-    { "Palette: %i ", INT, &manual_palette_selected, nullptr, 12 },
+    { "Swap AB <> BA: %s", ARRAY, &swap_ab,  nullptr, 1, {"NO ", "YES"}},
+    { "Palette: %s ", ARRAY, &manual_palette_selected, nullptr, 12,
+        {
+            "0 - AUTO      ",
+            "1 - yellow-red",
+            "2 - orange    ",
+            "3 - negative  ",
+            "4 - dark green",
+            "5 - red       ",
+            "6 - pink      ",
+            "7 - green     ",
+            "8 - dark blue ",
+            "9 - pastel    ",
+            "10 - blue     ",
+            "11 - yellow   ",
+            "12 - DMG      "
+        }
+    },
     {},
-    { "Save state: %i", INT, &save_slot, &save, 5 },
-    { "Load state: %i", INT, &save_slot, &load, 5 },
+    { "Save state: %i", INT, &save_slot, &save, 8 },
+    { "Load state: %i", INT, &save_slot, &load, 8 },
 #if SOFTTV
     { "" },
     { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -752,19 +795,36 @@ const MenuItem menu_items[] = {
     { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
     { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
 #endif
-#ifdef VGA
-#endif
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-    { "378", "396", "404", "408", "412", "416", "420", "424", "433" }
+    { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
-#define MENU_ITEMS_NUMBER count_of(menu_items)
+#define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
+static void f_load_conf(void) {
+    FIL f;
+    if (f_open(&f, "/GB/gb.conf", FA_READ) == FR_OK) {
+        UINT br;
+        f_read(&f, &swap_ab, 1, &br);
+        f_read(&f, &manual_palette_selected, 1, &br);
+        f_close(&f);
+    }
+}
+
+static void f_save_conf(void) {
+    f_mkdir("/GB"); // ничего не делает, если она уже есть
+    FIL f;
+    f_open(&f, "/GB/gb.conf", FA_CREATE_ALWAYS | FA_WRITE);
+    UINT br;
+    f_write(&f, &swap_ab, 1, &br);
+    f_write(&f, &manual_palette_selected, 1, &br);
+    f_close(&f);
+}
 
 void menu() {
     bool exit = false;
@@ -857,17 +917,18 @@ void menu() {
     }
     if (manual_palette_selected > 0) {
         manual_assign_palette(palette16, manual_palette_selected);
-
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-                palette[i][j] = i * 4 + j;
-            }
+    } else {
+        char rom_title[16];
+        auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
     }
-
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++) {
+            graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
+            palette[i][j] = i * 4 + j;
+        }
+    f_save_conf();
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
-
 
 int main() {
     overclock();
@@ -898,13 +959,21 @@ int main() {
     // Initialize audio emulation
     audio_init();
 
-    while (true) {
-        manual_palette_selected = 7;
-        /* ROM File selector */
+    FRESULT fr = f_mount(&fs, "", 1);
+    if (FR_OK != fr) {
+        printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
+        /// TODO: error handling
+    } else {
+        f_load_conf();
+    }
 
-        graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "gbc,gb");
-        graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    while (true) {
+        /* ROM File selector */
+        if (FR_OK == fr) {
+            graphics_set_mode(TEXTMODE_DEFAULT);
+            filebrowser(HOME_DIR, "gbc,gb");
+            graphics_set_mode(GRAPHICSMODE_DEFAULT);
+        }
 
         /* Initialise GB context. */
         gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
@@ -938,7 +1007,15 @@ int main() {
         //=============================================================================
         while (!restart) {
             //------------------------------------------------------------------------------
-
+            if (fxPressedV) {
+                if (altPressed) {
+                    save_slot = fxPressedV;
+                    load();
+                } else if (ctrlPressed) {
+                    save_slot = fxPressedV;
+                    save();
+                }
+            }
             gb.direct.joypad_bits.up = !gamepad_bits.up;
             gb.direct.joypad_bits.down = !gamepad_bits.down;
             gb.direct.joypad_bits.left = !gamepad_bits.left;

@@ -544,7 +544,7 @@ void get_colour_palette(palette_t selected_palette,uint8_t table_entry,uint8_t s
 		const palette_t palette = 	{
 			{ 0xFFFF, 0xFC30, 0x91C7, 0x0000 }, /* OBJ0 */
 			{ 0xFFFF, 0xFC30, 0x91C7, 0x0000 }, /* OBJ1 */
-			{ 0xFFFF, 0x14c8, 0x0318, 0x0000 }  /* BG */
+			{ 0xFFFF, 0x7FE6, 0x0318, 0x0000 }  /* BG */ /// Олег попросил вернуть оригинал на 0x7FE6 (оригинал)
 		};
 		memcpy(selected_palette, palette, PALETTE_SIZE_IN_BYTES);
 		return;
