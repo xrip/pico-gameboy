@@ -208,7 +208,7 @@ void graphics_set_modeTV(tv_out_mode_t mode) {
     };
     video_mode.LVL_BLACK_TMPL = CONV_DAC(video_mode.LVL_BLACK) | (1 << SYNC_PIN);
 
-    sm_config_set_clkdiv(PIO_VIDEO->sm, clock_get_hz(clk_sys) / (color_freq * 4));
+    sm_config_set_clkdiv((pio_sm_config*)PIO_VIDEO->sm, clock_get_hz(clk_sys) / (color_freq * 4));
 
 };
 
@@ -242,8 +242,8 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
     int8_t Y8 = ((int)(Y * video_mode.LVL_Y_MAX)) + base8;
 
     uint32_t cd0_32, cd1_32;
-    int8_t* cd0 = &cd0_32;
-    int8_t* cd1 = &cd1_32;
+    int8_t* cd0 = (int8_t*)&cd0_32;
+    int8_t* cd1 = (int8_t*)&cd1_32;
 
     float sin[] = { 0, 1, 0, -1 };
     // float sin[]={-1,1,1,-1,-1};//test
@@ -410,14 +410,14 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
 
 
     uint32_t Y32 = (Y8 << 24) | (Y8 << 16) | (Y8 << 8) | (Y8 << 0);
-    int8_t* yi = &Y32;
-    int8_t* ci = &cd0_32;
+    int8_t* yi = (int8_t*)&Y32;
+    int8_t* ci = (int8_t*)&cd0_32;
 
     for (int i = 0; i < 4; i++) { yi[i] = CONV_DAC(yi[i]+ci[i]) | (1 << SYNC_PIN); };
     conv_color[0][i] = Y32;
 
     Y32 = (Y8 << 24) | (Y8 << 16) | (Y8 << 8) | (Y8 << 0);
-    ci = &cd1_32;
+    ci = (int8_t*)&cd1_32;
     for (int i = 0; i < 4; i++) { yi[i] = CONV_DAC(yi[i]+ci[i]) | (1 << SYNC_PIN); };
     conv_color[1][i] = Y32;
 
@@ -1004,7 +1004,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                                                          //цвет шрифта
                                                                          : textmode_palette[colorIndex >> 4] //цвет фона
                                     ];
-                                    uint8_t* c_4 = &cout32;
+                                    uint8_t* c_4 = (uint8_t*)&cout32;
                                     *output_buffer8++ = c_4[bit % 4];
                                     *output_buffer8++ = c_4[bit % 4];
                                     *output_buffer8++ = c_4[bit % 4];
@@ -1017,7 +1017,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                             if (y < graphics_buffer.shift_y || y > graphics_buffer.height+graphics_buffer.shift_y) {
                                 for (int i = 0; i < video_mode.img_W - d_end; i++) {
                                     uint32_t cout32 = conv_color[li][200];
-                                    uint8_t* c_4 = &cout32;
+                                    uint8_t* c_4 = (uint8_t*)&cout32;
                                     *output_buffer8++ = c_4[i % 4];
                                 }
                             } else {
@@ -1028,7 +1028,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                 uint8_t color = graphics_buffer.shift_x ? 200 : *input_buffer8++;
                                 uint32_t cout32 = conv_color[li][color];
                                 // uint8_t* c_4=&conv_color[0][c8&0xf];
-                                uint8_t* c_4 = &cout32;
+                                uint8_t* c_4 = (int8_t*)&cout32;
                                 output_buffer8 += buffer_shift;
 
 
