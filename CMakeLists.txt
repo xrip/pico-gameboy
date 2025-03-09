@@ -1,7 +1,23 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.1.1)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.1.1)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
 cmake_minimum_required(VERSION 3.13...3.23)
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards )
-set(PICO_BOARD "murmulator" CACHE STRING "Board type")
-
+set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
+#set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")
+#set(PICO_BOARD "murmulator" CACHE STRING "Board type")
+set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
 include(pico_sdk_import.cmake)
 
 project(gameboy-color C CXX ASM)
@@ -15,7 +31,17 @@ option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(HDMI "Enable HDMI display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
+if( ${PICO_PLATFORM} MATCHES "rp2350" )
+option(m1p2launcher "Enable m1p2-launcher support" OFF)
+endif()
 
+#set(m1p2launcher ON)
+#set(I2S ON)
+#set(TFT ON)
+#set(ILI9341 ON)
+#set(HDMI ON)
+#set(TV ON)
+#set(SOFTTV ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -49,12 +75,32 @@ add_executable(${PROJECT_NAME}
 )
 
 
-pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
-pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+if( ${PICO_PLATFORM} MATCHES "rp2040" )
+	pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
+	target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+	pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
+	if ( ${PICO_BOARD} MATCHES "murmulator2")
+		SET(BUILD_NAME "m2p1-${PROJECT_NAME}")
+	else()
+		SET(BUILD_NAME "m1p1-${PROJECT_NAME}")
+	endif()
+else()
+    if (m1p2launcher)
+		pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/memmap.ld")
+	endif()
+	if ( ${PICO_BOARD} MATCHES "murmulator2")
+		SET(BUILD_NAME "m2p2-${PROJECT_NAME}")
+	else()
+		SET(BUILD_NAME "m1p2-${PROJECT_NAME}")
+	endif()
+endif()
 
-pico_set_program_name(gameboy-color "Gameboy Emulator by xrip")
-pico_set_program_version(gameboy-color "test")
+if ( ${PICO_BOARD} MATCHES "murmulator2")
+	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 2.0 board")
+else()
+	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 1.x board")
+endif()
+pico_set_program_version(gameboy-color "3.0.3")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         src
@@ -92,6 +138,7 @@ ENDIF()
 
 IF(NOT I2S)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM)
+    SET(BUILD_NAME "${BUILD_NAME}-PWM")
 ELSEIF(I2S_CS4334)
     target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
     SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
@@ -117,6 +164,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_multicore
         pico_stdio
         pico_multicore
+        hardware_pwm
 
         tinyusb_board
         tinyusb_device
