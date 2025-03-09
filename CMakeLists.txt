@@ -36,7 +36,7 @@ option(m1p2launcher "Enable m1p2-launcher support" OFF)
 endif()
 
 #set(m1p2launcher ON)
-set(I2S ON)
+#set(I2S ON)
 #set(TFT ON)
 #set(ILI9341 ON)
 #set(HDMI ON)
@@ -138,6 +138,7 @@ ENDIF()
 
 IF(NOT I2S)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM)
+    SET(BUILD_NAME "${BUILD_NAME}-PWM")
 ELSEIF(I2S_CS4334)
     target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
     SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
@@ -163,6 +164,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_multicore
         pico_stdio
         pico_multicore
+        hardware_pwm
 
         tinyusb_board
         tinyusb_device
