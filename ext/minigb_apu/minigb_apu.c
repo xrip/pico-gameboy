@@ -225,8 +225,8 @@ static void update_square(int16_t* samples, const bool ch2)
 		sample *= c->volume;
 		sample /= 4;
 
-		samples[i + 0] += sample * c->on_left * vol_l;
-		samples[i + 1] += sample * c->on_right * vol_r;
+		samples[i + 0] += (sample * c->on_left * vol_l) >> 1;
+		samples[i + 1] += (sample * c->on_right * vol_r) >> 1;
 	}
 }
 
@@ -292,8 +292,8 @@ static void update_wave(int16_t *samples)
 
 		sample /= 4;
 
-		samples[i + 0] += sample * c->on_left * vol_l;
-		samples[i + 1] += sample * c->on_right * vol_r;
+		samples[i + 0] += (sample * c->on_left * vol_l) >> 1;
+		samples[i + 1] += (sample * c->on_right * vol_r) >> 1;
 	}
 }
 
@@ -356,8 +356,8 @@ static void update_noise(int16_t *samples)
 		sample *= c->volume;
 		sample /= 4;
 
-		samples[i + 0] += sample * c->on_left * vol_l;
-		samples[i + 1] += sample * c->on_right * vol_r;
+		samples[i + 0] += (sample * c->on_left * vol_l) >> 1;
+		samples[i + 1] += (sample * c->on_right * vol_r) >> 1;
 	}
 }
 

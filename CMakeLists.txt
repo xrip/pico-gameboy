@@ -100,7 +100,7 @@ if ( ${PICO_BOARD} MATCHES "murmulator2")
 else()
 	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 1.x board")
 endif()
-pico_set_program_version(gameboy-color "2.1.3")
+pico_set_program_version(gameboy-color "3.0.3")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         src
