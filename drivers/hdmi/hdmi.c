@@ -413,8 +413,13 @@ static inline bool hdmi_init() {
         gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_FAST);
     }
 
+#if beginHDMI_PIN_clk >= 32
+    pio_sm_set_pins_with_mask64(PIO_VIDEO, SM_video, 3ull << beginHDMI_PIN_clk, 3ull << beginHDMI_PIN_clk);
+    pio_sm_set_pindirs_with_mask64(PIO_VIDEO, SM_video, 3ull << beginHDMI_PIN_clk, 3ull << beginHDMI_PIN_clk);
+#else
     pio_sm_set_pins_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
     pio_sm_set_pindirs_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
+#endif
     //пины
 
     for (int i = 0; i < 6; i++) {
@@ -574,6 +579,12 @@ void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height) {
 //выделение и настройка общих ресурсов - 4 DMA канала, PIO программ и 2 SM
 void graphics_init() {
     //настройка PIO
+#if beginHDMI_PIN_data >= 32
+    // RP2350B: GPIO32..39 are addressed through GPIO base 16 of PIO0.
+    // Must be set before any program is added to that PIO (hdmi_init below).
+    pio_set_gpio_base(PIO_VIDEO, 16);
+    pio_set_gpio_base(PIO_VIDEO_ADDR, 16);
+#endif
     SM_video = pio_claim_unused_sm(PIO_VIDEO, true);
     SM_conv = pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
     //выделение и преднастройка DMA каналов

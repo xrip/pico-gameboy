@@ -411,8 +411,8 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
     FILINFO fileinfo;
     f_stat(pathname, &fileinfo);
 
-#ifdef PICO_PC
-    /* The ROM goes right after the firmware; the top 512 KB of the 4 MB flash
+#if defined(PICO_PC) || defined(BOARD_Z0)
+    /* The ROM goes right after the firmware; the top 512 KB of the flash
      * stay untouched (pico-launcher lives in the last 260 KB). */
     if (FLASH_TARGET_OFFSET + fileinfo.fsize > PICO_FLASH_SIZE_BYTES - (512u << 10)) {
 #else
@@ -690,7 +690,12 @@ typedef struct __attribute__((__packed__)) {
 } MenuItem;
 
 static int save_slot = 0;
-static uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+#ifndef CPU_FREQ
+#define CPU_FREQ 378
+#endif
+#define FREQ_STR_(x) #x
+#define FREQ_STR(x) FREQ_STR_(x)
+static uint16_t frequencies[] = { CPU_FREQ, 396, 404, 408, 412, 416, 420, 424, 433 };
 static uint8_t frequency_index = 0;
 
 bool overclock() {
@@ -813,7 +818,7 @@ const MenuItem menu_items[] = {
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-    { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
+    { FREQ_STR(CPU_FREQ), "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
     { "Reset to ROM select", ROM_SELECT },
