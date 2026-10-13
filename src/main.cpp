@@ -31,6 +31,9 @@
 #include <hardware/flash.h>
 #include <hardware/timer.h>
 #include <hardware/vreg.h>
+#if PICO_RP2350
+#include <hardware/structs/qmi.h>
+#endif
 #include <pico/stdio.h>
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
@@ -226,6 +229,9 @@ void gb_error(struct gb_s* gb, const enum gb_error_e gb_err, const uint16_t addr
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
+#ifdef KBDUSB
+    tuh_init(BOARD_TUH_RHPORT);
+#endif
     graphics_init();
 
     const auto buffer = (uint8_t *)SCREEN;
@@ -268,8 +274,9 @@ void __time_critical_func(render_core)() {
         tick = time_us_64();
 
 
-        // tuh_task();
-        //hid_app_task();
+#ifdef KBDUSB
+        tuh_task();
+#endif
         tight_loop_contents();
     }
 
@@ -331,14 +338,8 @@ void write_cart_ram_file(struct gb_s* gb) {
     gb_get_rom_name(gb, filename);
     save_size = gb_get_save_size(gb);
     if (save_size > 0) {
-        FRESULT fr = f_mount(&fs, "", 1);
-        if (FR_OK != fr) {
-            printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
-            return;
-        }
-
         FIL fil;
-        fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
+        FRESULT fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
         if (fr == FR_OK) {
             f_write(&fil, ram, save_size, &bw);
         }
@@ -410,7 +411,13 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
     FILINFO fileinfo;
     f_stat(pathname, &fileinfo);
 
+#if defined(PICO_PC) || defined(BOARD_Z0)
+    /* The ROM goes right after the firmware; the top 512 KB of the flash
+     * stay untouched (pico-launcher lives in the last 260 KB). */
+    if (FLASH_TARGET_OFFSET + fileinfo.fsize > PICO_FLASH_SIZE_BYTES - (512u << 10)) {
+#else
     if (16384 - 64 << 10 < fileinfo.fsize) {
+#endif
         draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
         sleep_ms(5000);
         return false;
@@ -423,8 +430,24 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
 
     multicore_lockout_start_blocking();
     auto flash_target_offset = FLASH_TARGET_OFFSET;
+#if PICO_RP2350
+    /* flash_range_erase/program leave XIP through the boot-time XIP setup,
+     * which restores the QMI window-0 timing chosen for the boot clock.
+     * overclock() runs the flash with its own timing at 378+ MHz, so the
+     * boot value would clock the flash far too fast afterwards and every
+     * XIP fetch would return garbage. Keep the overclock timing. */
+    const uint32_t qmi_timing = qmi_hw->m[0].timing;
+    const uint32_t qmi_rfmt   = qmi_hw->m[0].rfmt;
+    const uint32_t qmi_rcmd   = qmi_hw->m[0].rcmd;
+#define RESTORE_QMI() do { qmi_hw->m[0].timing = qmi_timing; qmi_hw->m[0].rfmt = qmi_rfmt; \
+                           qmi_hw->m[0].rcmd = qmi_rcmd; __asm volatile ("dsb; isb" ::: "memory"); } while (0)
+#else
+#define RESTORE_QMI() do { } while (0)
+#endif
     const uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(flash_target_offset, fileinfo.fsize);
+    /* erase whole sectors: the ROM size is rarely a multiple of 4 KB */
+    flash_range_erase(flash_target_offset, (fileinfo.fsize + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1));
+    RESTORE_QMI();
     restore_interrupts(ints);
 
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
@@ -436,6 +459,7 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
             if (bytes_read) {
                 const uint32_t ints = save_and_disable_interrupts();
                 flash_range_program(flash_target_offset, buffer, FLASH_PAGE_SIZE);
+                RESTORE_QMI();
                 restore_interrupts(ints);
 
                 gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
@@ -462,11 +486,6 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
 
     DIR dir;
     FILINFO fileInfo;
-
-    if (FR_OK != f_mount(&fs, "SD", 1)) {
-        draw_text("SD Card not inserted or SD Card error!", 0, 0, 12, 0);
-        while (true);
-    }
 
     while (true) {
         memset(fileItems, 0, sizeof(file_item_t) * max_files);
@@ -671,14 +690,19 @@ typedef struct __attribute__((__packed__)) {
 } MenuItem;
 
 static int save_slot = 0;
-static uint16_t frequencies[] = { 378, 396, 404, 408, 412, 416, 420, 424, 433 };
+#ifndef CPU_FREQ
+#define CPU_FREQ 378
+#endif
+#define FREQ_STR_(x) #x
+#define FREQ_STR(x) FREQ_STR_(x)
+static uint16_t frequencies[] = { CPU_FREQ, 396, 404, 408, 412, 416, 420, 424, 433 };
 static uint8_t frequency_index = 0;
 
 bool overclock() {
 #if PICO_RP2350
     volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
     vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_40);
+    vreg_set_voltage(VREG_VOLTAGE_1_60);
     sleep_ms(10);
     *qmi_m0_timing = 0x60007204;
     set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);
@@ -703,11 +727,9 @@ static bool save() {
         sprintf(pathname, "%s\\%s.save", HOME_DIR, filename);
     }
 
-    FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
-    fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
+    f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
     UINT bw;
-
     f_write(&fd, &gb, sizeof(gb), &bw);
     f_write(&fd, ram, sizeof(ram), &bw);
     f_close(&fd);
@@ -727,15 +749,12 @@ static bool load() {
         sprintf(pathname, "GB\\%s.save", filename);
     }
 
-    FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
-    fr = f_open(&fd, pathname, FA_READ);
+    f_open(&fd, pathname, FA_READ);
     UINT br;
-
     f_read(&fd, &gb, sizeof(gb), &br);
     f_read(&fd, ram, sizeof(ram), &br);
     f_close(&fd);
-
     return true;
 }
 #if SOFTTV
@@ -799,7 +818,7 @@ const MenuItem menu_items[] = {
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-    { "378", "396", "404", "408", "412", "416", "420", "424", "432" }
+    { FREQ_STR(CPU_FREQ), "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
     { "Reset to ROM select", ROM_SELECT },
@@ -964,7 +983,9 @@ int main() {
     if (FR_OK != fr) {
         printf("E f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
         /// TODO: error handling
+        while(1);
     } else {
+        f_mkdir(HOME_DIR);
         f_load_conf();
     }
 

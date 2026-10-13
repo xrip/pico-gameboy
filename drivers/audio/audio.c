@@ -25,7 +25,22 @@
 #define PWM_PIN0 (AUDIO_PWM_PIN&0xfe)
 #define PWM_PIN1 (PWM_PIN0+1)
 
+
 #include "audio.h"
+
+#if defined(AUDIO_PWM_PIN) && defined(PICO_PC)
+/* Olimex PICO-PC: the audio jack is wired to GPIO28 (left, PWM slice 6 A)
+ * and GPIO27 (right, PWM slice 5 B) -- two different slices, while the
+ * generic code feeds both channels of ONE slice (GPIO26/27; GPIO26 is DVI_CEC
+ * here). Feed both slices with the same buffer through two DMA channels:
+ * each 32-bit word lands in a slice's CC register, low half -> channel A,
+ * high half -> channel B, so slice 6 A plays the left sample and slice 5 B
+ * the right one. Both slices share the wrap and start together, so the two
+ * DMA streams stay in step. */
+#define PCPC_PWM_LEFT  28
+#define PCPC_PWM_RIGHT 27
+static int pcpc_dma_right = -1;
+#endif
 
 #ifdef AUDIO_PWM_PIN
 #include "hardware/pwm.h"
@@ -100,8 +115,37 @@ void i2s_init(i2s_config_t *i2s_config) {
 
     channel_config_set_transfer_data_size(&dma_config, DMA_SIZE_32);
 
-    volatile uint32_t* addr_write_DMA=&(i2s_config->pio->txf[i2s_config->sm]);
-#ifdef AUDIO_PWM_PIN
+    uint32_t* addr_write_DMA=(uint32_t*)&(i2s_config->pio->txf[i2s_config->sm]);
+#if defined(AUDIO_PWM_PIN) && defined(PICO_PC)
+    gpio_set_function(PCPC_PWM_LEFT, GPIO_FUNC_PWM);
+    gpio_set_function(PCPC_PWM_RIGHT, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(PCPC_PWM_LEFT);
+    uint slice_right = pwm_gpio_to_slice_num(PCPC_PWM_RIGHT);
+    {
+        pwm_config c_pwm = pwm_get_default_config();
+        pwm_config_set_clkdiv(&c_pwm, 1.0);
+        pwm_config_set_wrap(&c_pwm, clock_get_hz(clk_sys) / (i2s_config->sample_freq));
+        pwm_init(slice_num, &c_pwm, false);
+        pwm_init(slice_right, &c_pwm, false);
+        pwm_set_mask_enabled(pwm_hw->en | (1u << slice_num) | (1u << slice_right));
+    }
+    channel_config_set_dreq(&dma_config, pwm_get_dreq(slice_num));
+    addr_write_DMA = (uint32_t*)&pwm_hw->slice[slice_num].cc;
+
+    pcpc_dma_right = dma_claim_unused_channel(true);
+    {
+        dma_channel_config cfg_r = dma_channel_get_default_config(pcpc_dma_right);
+        channel_config_set_read_increment(&cfg_r, true);
+        channel_config_set_write_increment(&cfg_r, false);
+        channel_config_set_transfer_data_size(&cfg_r, DMA_SIZE_32);
+        channel_config_set_dreq(&cfg_r, pwm_get_dreq(slice_right));
+        dma_channel_configure(pcpc_dma_right, &cfg_r,
+                              &pwm_hw->slice[slice_right].cc,
+                              i2s_config->dma_buf,
+                              i2s_config->dma_trans_count,
+                              false);
+    }
+#elif defined(AUDIO_PWM_PIN)
     gpio_set_function(PWM_PIN0, GPIO_FUNC_PWM);
     gpio_set_function(PWM_PIN1, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(PWM_PIN0);
@@ -158,6 +202,9 @@ void i2s_write(const i2s_config_t *i2s_config,const int16_t *samples,const size_
 void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
     /* Wait the completion of the previous DMA transfer */
     dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);
+#if defined(AUDIO_PWM_PIN) && defined(PICO_PC)
+    dma_channel_wait_for_finish_blocking(pcpc_dma_right);
+#endif
     /* Copy samples into the DMA buffer */
 
 #ifdef AUDIO_PWM_PIN
@@ -182,6 +229,11 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
     dma_channel_transfer_from_buffer_now(i2s_config->dma_channel,
                                          i2s_config->dma_buf,
                                          i2s_config->dma_trans_count);
+#if defined(AUDIO_PWM_PIN) && defined(PICO_PC)
+    dma_channel_transfer_from_buffer_now(pcpc_dma_right,
+                                         i2s_config->dma_buf,
+                                         i2s_config->dma_trans_count);
+#endif
 }
 
 /**

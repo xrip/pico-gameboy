@@ -4,9 +4,9 @@ if(WIN32)
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.1.1)
+set(sdkVersion 2.2.0)
 set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.1.1)
+set(picotoolVersion 2.2.0)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -17,7 +17,22 @@ set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards )
 set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
 #set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")
 #set(PICO_BOARD "murmulator" CACHE STRING "Board type")
-set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
+#set(PICO_BOARD "olimex-pico-pc" CACHE STRING "Board type")
+#set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
+set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type")
+
+option(USB_HID "USB keyboard on the native USB port (TinyUSB host)" OFF)
+if(${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
+    # Waveshare RP2350-PiZero (z0p2): RP2350B, 16 MB flash, HDMI on GPIO32..39,
+    # sound through an I2S module (PCM5102A) on GP10..12, USB keyboard.
+    set(PICO_FLASH_SIZE_BYTES 16777216 CACHE STRING "" FORCE)
+    set(HDMI ON CACHE BOOL "Enable HDMI display" FORCE)
+    set(I2S ON CACHE BOOL "Enable I2S sound" FORCE)
+    set(USB_HID ON CACHE BOOL "USB keyboard on the native USB port (TinyUSB host)" FORCE)
+endif()
+if(${PICO_BOARD} MATCHES "olimex-pico-pc")
+    set(USB_HID ON CACHE BOOL "USB keyboard on the native USB port (TinyUSB host)" FORCE)
+endif()
 include(pico_sdk_import.cmake)
 
 project(gameboy-color C CXX ASM)
@@ -72,6 +87,7 @@ add_subdirectory(drivers/graphics)
 add_executable(${PROJECT_NAME}
         ext/minigb_apu/minigb_apu.c
         src/main.cpp
+        src/hid_app.cpp
 )
 
 
@@ -81,6 +97,8 @@ if( ${PICO_PLATFORM} MATCHES "rp2040" )
 	pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
 	if ( ${PICO_BOARD} MATCHES "murmulator2")
 		SET(BUILD_NAME "m2p1-${PROJECT_NAME}")
+	elseif ( ${PICO_BOARD} MATCHES "olimex-pico-pc")
+		SET(BUILD_NAME "PCp1-${PROJECT_NAME}")
 	else()
 		SET(BUILD_NAME "m1p1-${PROJECT_NAME}")
 	endif()
@@ -90,6 +108,10 @@ else()
 	endif()
 	if ( ${PICO_BOARD} MATCHES "murmulator2")
 		SET(BUILD_NAME "m2p2-${PROJECT_NAME}")
+	elseif ( ${PICO_BOARD} MATCHES "olimex-pico-pc")
+		SET(BUILD_NAME "PCp2-${PROJECT_NAME}")
+	elseif ( ${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
+		SET(BUILD_NAME "z0p2-${PROJECT_NAME}")
 	else()
 		SET(BUILD_NAME "m1p2-${PROJECT_NAME}")
 	endif()
@@ -97,10 +119,14 @@ endif()
 
 if ( ${PICO_BOARD} MATCHES "murmulator2")
 	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 2.0 board")
+elseif ( ${PICO_BOARD} MATCHES "olimex-pico-pc")
+	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for Olimex RP2040-PICO-PC")
+elseif ( ${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
+	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for Waveshare RP2350-PiZero")
 else()
 	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 1.x board")
 endif()
-pico_set_program_version(gameboy-color "3.0.3")
+pico_set_program_version(gameboy-color "3.0.4")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         src
@@ -167,8 +193,16 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         hardware_pwm
 
         tinyusb_board
-        tinyusb_device
 )
+
+if (USB_HID)
+	# USB keyboard on the native USB port (TinyUSB host, src/hid_app.cpp):
+	# Olimex PICO-PC and Waveshare RP2350-PiZero. PS/2 keeps working too.
+	target_compile_definitions(${PROJECT_NAME} PRIVATE KBDUSB)
+	target_link_libraries(${PROJECT_NAME} PRIVATE tinyusb_host)
+else()
+	target_link_libraries(${PROJECT_NAME} PRIVATE tinyusb_device)
+endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 pico_add_extra_outputs(${PROJECT_NAME})
