@@ -39,4 +39,8 @@
 #define AUDIO_DATA_PIN 10
 #define AUDIO_CLOCK_PIN 11
 #define AUDIO_LCK_PIN 12
+// drivers/audio switches to PWM whenever AUDIO_PWM_PIN is defined,
+// so define it only for a PWM build (cmake -DI2S=OFF)
+#if defined(AUDIO_PWM)
 #define AUDIO_PWM_PIN 10
+#endif
