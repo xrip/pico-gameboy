@@ -18,8 +18,8 @@ set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
 #set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")
 #set(PICO_BOARD "murmulator" CACHE STRING "Board type")
 #set(PICO_BOARD "olimex-pico-pc" CACHE STRING "Board type")
-#set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
-set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type")
+set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
+#set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type")
 
 option(USB_HID "USB keyboard on the native USB port (TinyUSB host)" OFF)
 if(${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
@@ -27,11 +27,19 @@ if(${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
     # sound through an I2S module (PCM5102A) on GP10..12, USB keyboard.
     set(PICO_FLASH_SIZE_BYTES 16777216 CACHE STRING "" FORCE)
     set(HDMI ON CACHE BOOL "Enable HDMI display" FORCE)
-    set(I2S ON CACHE BOOL "Enable I2S sound" FORCE)
+#    set(I2S ON CACHE BOOL "Enable I2S sound" FORCE)
     set(USB_HID ON CACHE BOOL "USB keyboard on the native USB port (TinyUSB host)" FORCE)
 endif()
 if(${PICO_BOARD} MATCHES "olimex-pico-pc")
     set(USB_HID ON CACHE BOOL "USB keyboard on the native USB port (TinyUSB host)" FORCE)
+endif()
+if(${PICO_BOARD} MATCHES "murmulator2")
+    # Murmulator 2.0 + Pico 2 (m2p2 kit): USB keyboard on the Pico 2 port (PS/2 on
+    # GP2/GP3 keeps working). Defaults HDMI + I2S (TDA1387 DAC); -DHDMI=OFF builds
+    # VGA, -DI2S=OFF builds PWM (GP10/GP11).
+    set(USB_HID ON CACHE BOOL "USB keyboard on the native USB port (TinyUSB host)" FORCE)
+#    set(HDMI ON CACHE BOOL "Enable HDMI display")
+#    set(I2S ON CACHE BOOL "Enable I2S sound")
 endif()
 include(pico_sdk_import.cmake)
 

@@ -411,13 +411,9 @@ bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
     FILINFO fileinfo;
     f_stat(pathname, &fileinfo);
 
-#if defined(PICO_PC) || defined(BOARD_Z0)
     /* The ROM goes right after the firmware; the top 512 KB of the flash
      * stay untouched (pico-launcher lives in the last 260 KB). */
     if (FLASH_TARGET_OFFSET + fileinfo.fsize > PICO_FLASH_SIZE_BYTES - (512u << 10)) {
-#else
-    if (16384 - 64 << 10 < fileinfo.fsize) {
-#endif
         draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
         sleep_ms(5000);
         return false;
