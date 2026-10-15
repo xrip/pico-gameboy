@@ -5,8 +5,9 @@
 #include "boards/pico.h"
 #endif
 
-// 16MB flash
-#define PICO_FLASH_SIZE_BYTES 16777216
+// Murmulator 2.0: flash size from the module header (Pico 2: 4 MB, Pico: 2 MB);
+// main.cpp keeps the top 512 KB free for pico-launcher when loading a ROM.
+#define BOARD_M2 1
 // SDCARD
 #define SDCARD_PIN_SPI0_CS 5
 #define SDCARD_PIN_SPI0_SCK 6
@@ -38,7 +39,9 @@
 
 // Sound
 #if defined(AUDIO_PWM)
-#define AUDIO_PWM_PIN 9
+// PWM stereo on GP10/GP11 (one PWM slice); audio.c takes PWM_PIN0 = AUDIO_PWM_PIN & 0xfe,
+// so 9 would put it on GP8 (PSRAM CS) / GP9
+#define AUDIO_PWM_PIN 10
 #endif
 
 #define AUDIO_DATA_PIN 9
