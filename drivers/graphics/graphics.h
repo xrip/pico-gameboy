@@ -58,6 +58,14 @@ void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
 
 void graphics_set_offset(int x, int y);
 
+// HDMI / VGA, GRAPHICSMODE_DEFAULT: Game Boy picture scale on the 640x480 screen
+enum graphics_scale_t {
+    GRAPHICS_SCALE_2X,      // 2x2 physical pixels per buffer pixel
+    GRAPHICS_SCALE_3X,      // 3x3 (HDMI: 3 lines, 4/2 pixels in turn - 2-pixel steps)
+    GRAPHICS_SCALE_STRETCH, // the whole 640x480 screen
+};
+void graphics_set_scale(enum graphics_scale_t scale);
+
 void graphics_set_palette(uint8_t i, uint32_t color);
 
 void graphics_set_textbuffer(uint8_t* buffer);

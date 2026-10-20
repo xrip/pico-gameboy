@@ -32,6 +32,7 @@ static int graphics_buffer_width = 0;
 static int graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
+static volatile enum graphics_scale_t graphics_scale = GRAPHICS_SCALE_2X;
 
 //текстовый буфер
 uint8_t* text_buffer = NULL;
@@ -179,7 +180,31 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
 
     line = line >= 524 ? 0 : line + 1;
 
-    if ((line & 1) == 0) return;
+    /* 2x and the text mode change the line buffer on every second physical
+     * line.  3x and the stretched picture need single physical lines: the
+     * buffer filled now is shown from the next line, so it is prepared for
+     * line + 1, and kept (no inx_buf_dma++) while the source row repeats. */
+    /* (the blanking lines keep the usual every-second-line rhythm) */
+    const bool per_line = graphics_mode == GRAPHICSMODE_DEFAULT &&
+                          graphics_scale != GRAPHICS_SCALE_2X && line < 479;
+    int scaled_row = -1;
+    if (per_line) {
+        const int target = line + 1;
+        const int h = graphics_buffer_height;
+        int prev_row;
+        if (graphics_scale == GRAPHICS_SCALE_3X) {
+            const int top = (480 - 3 * h) / 2;
+            scaled_row = target - top;
+            prev_row = scaled_row - 1;
+            scaled_row = scaled_row < 0 || scaled_row >= 3 * h ? -1 : scaled_row / 3;
+            prev_row = prev_row < 0 || prev_row >= 3 * h ? -1 : prev_row / 3;
+        } else {
+            scaled_row = target * h / 480;
+            prev_row = (target - 1) * h / 480;
+        }
+        // line 0 always draws: the buffer before it is a blanking line
+        if (line > 0 && scaled_row == prev_row) return;
+    } else if ((line & 1) == 0) return;
 
     inx_buf_dma++;
 
@@ -190,6 +215,37 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         //область изображения
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
 
+        if (per_line) {
+            if (scaled_row < 0) {
+                memset(output_buffer, 255, SCREEN_WIDTH);
+            } else {
+                const uint8_t* src = &graphics_buffer[scaled_row * graphics_buffer_width];
+                const int w = graphics_buffer_width;
+                // 3x: 1.5 output samples per pixel (each sample is 2 physical pixels)
+                const int out_w = graphics_scale == GRAPHICS_SCALE_3X ? w * 3 / 2 : SCREEN_WIDTH;
+                const int left = (SCREEN_WIDTH - out_w) / 2;
+                memset(output_buffer, 255, left);
+                uint8_t* out = output_buffer + left;
+                if (graphics_scale == GRAPHICS_SCALE_3X) {
+                    for (int x = 0; x + 1 < w; x += 2) {
+                        uint8_t a = src[x], b = src[x + 1];
+                        a = ((a & 0xf0) == 0xf0) ? 255 : a;
+                        b = ((b & 0xf0) == 0xf0) ? 255 : b;
+                        *out++ = a;
+                        *out++ = a;
+                        *out++ = b;
+                    }
+                } else {
+                    const int k = SCREEN_WIDTH / w; // stretch: whole samples per pixel
+                    for (int x = 0; x < w; x++) {
+                        uint8_t c = src[x];
+                        c = ((c & 0xf0) == 0xf0) ? 255 : c;
+                        for (int i = k; i--;) *out++ = c;
+                    }
+                }
+                memset(out, 255, output_buffer + SCREEN_WIDTH - out);
+            }
+        } else
         switch (graphics_mode) {
             case GRAPHICSMODE_DEFAULT:
             case VGA_320x240x256: {
@@ -624,6 +680,10 @@ void graphics_set_offset(int x, int y) {
     graphics_buffer_shift_x = x;
     graphics_buffer_shift_y = y;
 };
+
+void graphics_set_scale(enum graphics_scale_t scale) {
+    graphics_scale = scale;
+}
 
 void graphics_set_textbuffer(uint8_t* buffer) {
     text_buffer = buffer;

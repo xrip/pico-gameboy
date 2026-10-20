@@ -1021,10 +1021,15 @@ static bool load() {
     f_close(&fd);
     return true;
 }
-#if SOFTTV
 /* TV-SOFT: a TV standard is a coherent set (lines, colour subcarrier,
  * sync), so the menu only selects the system; the game is always in colour. */
 static uint8_t tv_system = 0; // 0 - PAL, 1 - NTSC
+/* HDMI / VGA: picture size on 640x480 (enum graphics_scale_t), by default as
+ * the drivers showed it before: HDMI 2x, VGA 3x */
+#if VGA
+static uint8_t screen_scale = 1;
+#else
+static uint8_t screen_scale = 0;
 #endif
 #ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
 #define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
@@ -1059,6 +1064,10 @@ const MenuItem menu_items[] = {
     { "" },
     { "TV system %s", ARRAY, &tv_system, nullptr, 1, { "PAL ", "NTSC" } },
 #endif
+#if VGA || HDMI
+    { "" },
+    { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
+#endif
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
@@ -1076,10 +1085,10 @@ static void f_load_conf(void) {
         UINT br;
         f_read(&f, &swap_ab, 1, &br);
         f_read(&f, &manual_palette_selected, 1, &br);
-#if SOFTTV
-        f_read(&f, &tv_system, 1, &br); // older configs end before it: PAL
-        if (tv_system > 1) tv_system = 0;
-#endif
+        // the same layout for all builds; older configs end earlier
+        uint8_t v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= 1) tv_system = v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= GRAPHICS_SCALE_STRETCH) screen_scale = v;
         f_close(&f);
     }
 }
@@ -1091,9 +1100,8 @@ static void f_save_conf(void) {
     UINT br;
     f_write(&f, &swap_ab, 1, &br);
     f_write(&f, &manual_palette_selected, 1, &br);
-#if SOFTTV
     f_write(&f, &tv_system, 1, &br);
-#endif
+    f_write(&f, &screen_scale, 1, &br);
     f_close(&f);
 }
 
@@ -1211,6 +1219,9 @@ void menu() {
 #if SOFTTV
     graphics_set_tv(tv_system == 0, true); // applied by graphics_set_mode()
 #endif
+#if VGA || HDMI
+    graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
 
@@ -1259,6 +1270,9 @@ int main() {
         f_load_conf();
 #if SOFTTV
         graphics_set_tv(tv_system == 0, true); // applied by the next graphics_set_mode()
+#endif
+#if VGA || HDMI
+        graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
     }
 

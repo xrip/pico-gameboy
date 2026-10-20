@@ -48,6 +48,23 @@ static uint graphics_buffer_width = 0;
 static uint graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
+static volatile enum graphics_scale_t graphics_scale = GRAPHICS_SCALE_3X;
+
+// source row shown on a screen line, -1 outside the picture
+static inline int scaled_row(const int line) {
+    const int h = graphics_buffer_height;
+    int r;
+    switch (graphics_scale) {
+        case GRAPHICS_SCALE_2X:
+            r = line - (N_lines_visible - 2 * h) / 2;
+            return r < 0 || r >= 2 * h ? -1 : r / 2;
+        case GRAPHICS_SCALE_3X:
+            r = line - (N_lines_visible - 3 * h) / 2;
+            return r < 0 || r >= 3 * h ? -1 : r / 3;
+        default:
+            return line < N_lines_visible ? line * h / N_lines_visible : -1;
+    }
+}
 
 static bool is_flash_line = false;
 static bool is_flash_frame = false;
@@ -111,6 +128,40 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+
+    if (graphics_mode == GRAPHICSMODE_DEFAULT) {
+        /* Game Boy picture on 640x480: 2x, 3x or stretched to the whole screen.
+         * A screen line that shows the same source row as the previous one
+         * keeps the previous line buffer (no new DMA address). */
+        const int row = scaled_row(screen_line);
+        if (row < 0) {
+            dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false);
+            return;
+        }
+        if (screen_line > 0 && row == scaled_row(screen_line - 1)) return;
+
+        const int w = graphics_buffer_width;
+        const int line_bytes = visible_line_size * 2; // 640 pixels, one byte each
+        const int k = graphics_scale == GRAPHICS_SCALE_2X ? 2
+                    : graphics_scale == GRAPHICS_SCALE_3X ? 3 : line_bytes / w;
+        const int left = (line_bytes - k * w) / 2;
+        uint8_t* dst = (uint8_t *)*output_buffer + shift_picture;
+        const uint32_t p_i = ((row & is_flash_line) + (frame_number & is_flash_frame)) & 1;
+        const uint32_t color32 = bg_color[p_i];
+        uint32_t* dst32 = (uint32_t *)dst;
+        for (int i = line_bytes / 4; i--;) *dst32++ = color32;
+
+        uint16_t* current_palette = palette[p_i];
+        const uint8_t* src = input_buffer + row * w;
+        uint8_t* out = dst + left;
+        for (int x = 0; x < w; x++) {
+            const uint8_t c = (uint8_t)current_palette[src[x]];
+            for (int i = k; i--;) *out++ = c;
+        }
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
+
     switch (graphics_mode) {
         case CGA_160x200x16:
         case CGA_320x200x4:
@@ -419,6 +470,10 @@ void graphics_set_buffer(uint8_t* buffer, const uint16_t width, const uint16_t h
 void graphics_set_offset(const int x, const int y) {
     graphics_buffer_shift_x = x;
     graphics_buffer_shift_y = y;
+}
+
+void graphics_set_scale(enum graphics_scale_t scale) {
+    graphics_scale = scale;
 }
 
 void graphics_set_flashmode(const bool flash_line, const bool flash_frame) {
