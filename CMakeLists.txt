@@ -21,7 +21,7 @@ set(PICO_BOARD "murmulator" CACHE STRING "Board type")
 #set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
 #set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type")
 
-option(USB_HID "USB keyboard on the native USB port (TinyUSB host)" OFF)
+option(USB_HID "USB keyboard on the native USB port (TinyUSB host)" ON)
 if(${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
     # Waveshare RP2350-PiZero (z0p2): RP2350B, 16 MB flash, HDMI on GPIO32..39,
     # sound through an I2S module (PCM5102A) on GP10..12, USB keyboard.
@@ -35,6 +35,9 @@ endif()
 include(pico_sdk_import.cmake)
 
 project(gameboy-color C CXX ASM)
+# one place for the version: menu footer (PICO_PROGRAM_VERSION_STRING),
+# binary info and the output file name
+set(PICO_GAMEBOY_VERSION "3.0.6")
 SET(BUILD_NAME "${PROJECT_NAME}")
 
 option(I2S "Enable I2S sound" OFF)
@@ -53,7 +56,7 @@ endif()
 #set(I2S ON)
 #set(TFT ON)
 #set(ILI9341 ON)
-#set(HDMI ON)
+set(HDMI ON)
 #set(TV ON)
 #set(SOFTTV ON)
 set(USB_HID ON)
@@ -88,6 +91,7 @@ add_executable(${PROJECT_NAME}
         ext/minigb_apu/minigb_apu.c
         src/main.cpp
         src/hid_app.cpp
+        src/psram.c
 )
 
 
@@ -126,7 +130,7 @@ elseif ( ${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
 else()
 	pico_set_program_name(gameboy-color "Gameboy emulator by xrip for MURMULATOR 1.x board")
 endif()
-pico_set_program_version(gameboy-color "3.0.4")
+pico_set_program_version(gameboy-color "${PICO_GAMEBOY_VERSION}")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         src
@@ -169,10 +173,10 @@ ELSEIF(I2S_CS4334)
     target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
     SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
 ELSE()
-    SET(BUILD_NAME "${BUILD_NAME}-I2S-TDA1387")
+    SET(BUILD_NAME "${BUILD_NAME}-I2S")
 ENDIF()
 
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${BUILD_NAME}")
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${BUILD_NAME}-${PICO_GAMEBOY_VERSION}")
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
         audio
