@@ -5,10 +5,6 @@
 #include "boards/pico.h"
 #endif
 
-// QSPI PSRAM on QMI CS1 (src/psram.c): probed at start, used for ROMs if found
-#define PSRAM_CS1_GPIO_RP2350A 8
-#define PSRAM_CS1_GPIO_RP2350B 47
-
 // Murmulator 2.0: flash size from the module header (Pico 2: 4 MB, Pico: 2 MB);
 // main.cpp keeps the top 512 KB free for pico-launcher when loading a ROM.
 #define BOARD_M2 1
