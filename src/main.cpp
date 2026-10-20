@@ -37,8 +37,10 @@
 #include <pico/stdio.h>
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
+#include <pico/critical_section.h>
 #include <sys/unistd.h>
 #include <hardware/watchdog.h>
+#include <hardware/clocks.h>
 
 #include "audio.h"
 #include "minigb_apu.h"
@@ -57,6 +59,7 @@
 #include "nespad.h"
 
 #include "ps2kbd_mrmltr.h"
+#include "psram.h"
 
 
 /** Definition of ROM data
@@ -67,11 +70,89 @@
 #define HOME_DIR (char*)"\\GB"
 extern char __flash_binary_end;
 #define FLASH_TARGET_OFFSET (((((uintptr_t)&__flash_binary_end - XIP_BASE) / FLASH_SECTOR_SIZE) + 4) * FLASH_SECTOR_SIZE)
-static const uint8_t* rom = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
+#define FLASH_ROM ((const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET))
+/* the cartridge being played: in flash, or in QSPI PSRAM when there is one */
+static const uint8_t* rom = FLASH_ROM;
+
+/* A ROM loaded into PSRAM survives a watchdog reset (SELECT in the browser
+ * runs it again: PSRAM keeps its contents while powered).  After power-up the
+ * uninitialized RAM is random, hence the magic; then the flash copy is used. */
+#define ROM_INFO_MAGIC 0x31524F47u
+static uint32_t __uninitialized_ram(rom_magic);
+static uint32_t __uninitialized_ram(rom_in_psram);
+static uint32_t __uninitialized_ram(rom_psram_size);
+
+/* Flash is an external chip, its size does not depend on the board header.
+ * Read it from JEDEC ID (0x9F) like murmulator_os2: the third ID byte is
+ * log2(capacity).  Called first thing in main(), before overclocking. */
+static size_t flash_bytes = PICO_FLASH_SIZE_BYTES;
+
+static void __no_inline_not_in_flash_func(detect_flash_size)() {
+    uint8_t tx[4] = { 0x9f, 0, 0, 0 };
+    uint8_t rx[4] = { 0 };
+    const uint32_t ints = save_and_disable_interrupts();
+#if PICO_RP2350
+    /* the SDK re-enters XIP with the boot-time QMI window-0 setup */
+    const uint32_t timing = qmi_hw->m[0].timing;
+    const uint32_t rfmt = qmi_hw->m[0].rfmt;
+    const uint32_t rcmd = qmi_hw->m[0].rcmd;
+#endif
+    flash_do_cmd(tx, rx, sizeof tx);
+#if PICO_RP2350
+    qmi_hw->m[0].timing = timing;
+    qmi_hw->m[0].rfmt = rfmt;
+    qmi_hw->m[0].rcmd = rcmd;
+    __asm volatile ("dsb; isb" ::: "memory");
+#endif
+    restore_interrupts(ints);
+    /* 16 MiB is the XIP window of one chip select */
+    if (rx[3] >= 20 && rx[3] <= 24)
+        flash_bytes = (size_t)1 << rx[3];
+}
+
+/* The ROM goes right after the firmware; the top 512 KB of the flash stay
+ * untouched (pico-launcher lives in the last 260 KB). */
+static size_t flash_rom_capacity() {
+    const size_t end = flash_bytes - (512u << 10);
+    return end > FLASH_TARGET_OFFSET ? end - FLASH_TARGET_OFFSET : 0;
+}
+
+static bool rom_fits(const size_t size) {
+    return size != 0 && (size <= flash_rom_capacity() ||
+                         (gb_psram_available() && size <= gb_psram_size()));
+}
+
+/* the cartridge "Run previous" (SELECT) starts */
+static const uint8_t* previous_rom() {
+    if (rom_magic == ROM_INFO_MAGIC && rom_in_psram &&
+        gb_psram_available() && rom_psram_size <= gb_psram_size())
+        return (const uint8_t *)GB_PSRAM_BASE;
+    return FLASH_ROM;
+}
+
+/* All watchdog resets (Ctrl+Alt+Del) take the same route: release QMI CS1 so
+ * the PSRAM does not stay in QPI mode across reset, then drop clk_sys before
+ * VREG, so the boot ROM and the next firmware start at a safe clock. */
+extern "C" void __no_inline_not_in_flash_func(gb_safe_reset)(void) {
+    watchdog_enable(100, true); // failsafe in case QMI/clock transition stalls
+    save_and_disable_interrupts();
+#if PICO_RP2350
+    gb_psram_prepare_reset();
+    set_sys_clock_khz(150000, false);
+    vreg_set_voltage(VREG_VOLTAGE_1_10);
+    sleep_ms(10);
+#else
+    set_sys_clock_khz(125000, false);
+#endif
+    watchdog_reboot(0, 0, 10);
+    while (true) tight_loop_contents();
+}
 
 static uint8_t ram[32768];
 
 semaphore vga_start_semaphore;
+// set by the render core once text/graphics buffers are attached to the video driver
+static volatile bool render_ready = false;
 
 gb_s gb;
 
@@ -140,6 +221,10 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
 static volatile bool altPressed = false;
 static volatile bool ctrlPressed = false;
 static volatile uint8_t fxPressedV = 0;
+static volatile bool kbd_page_up = false;
+static volatile bool kbd_page_down = false;
+static volatile bool kbd_home = false;
+static volatile bool kbd_end = false;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -163,14 +248,16 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
     keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
 
+    kbd_page_up = isInReport(report, HID_KEY_PAGE_UP);
+    kbd_page_down = isInReport(report, HID_KEY_PAGE_DOWN);
+    kbd_home = isInReport(report, HID_KEY_HOME);
+    kbd_end = isInReport(report, HID_KEY_END);
+
     altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
     ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
-    
+
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
-        watchdog_enable(10, true);
-        while(true) {
-            tight_loop_contents();
-        }
+        gb_safe_reset();
     }
     if (ctrlPressed || altPressed) {
         uint8_t fxPressed = 0;
@@ -191,6 +278,46 @@ Ps2Kbd_Mrmltr ps2kbd(
     PS2KBD_GPIO_FIRST,
     process_kbd_report
 );
+
+enum : uint8_t {
+    BTN_UP     = 1u << 0,
+    BTN_DOWN   = 1u << 1,
+    BTN_LEFT   = 1u << 2,
+    BTN_RIGHT  = 1u << 3,
+    BTN_A      = 1u << 4,
+    BTN_B      = 1u << 5,
+    BTN_START  = 1u << 6,
+    BTN_SELECT = 1u << 7,
+};
+
+/* keyboard and NES pad together (nespad_tick() merges them) */
+static uint8_t input_held() {
+    uint8_t b = 0;
+    if (gamepad_bits.up) b |= BTN_UP;
+    if (gamepad_bits.down) b |= BTN_DOWN;
+    if (gamepad_bits.left) b |= BTN_LEFT;
+    if (gamepad_bits.right) b |= BTN_RIGHT;
+    if (gamepad_bits.a) b |= BTN_A;
+    if (gamepad_bits.b) b |= BTN_B;
+    if (gamepad_bits.start) b |= BTN_START;
+    if (gamepad_bits.select) b |= BTN_SELECT;
+    return b;
+}
+
+/* Buttons that are already down when the mode changes (the Enter that started
+ * a ROM, the Start+Select that opened the menu, Enter on "Return to game",
+ * Enter on a directory...) are ignored until they are released. */
+struct input_gate_t {
+    uint8_t mask = 0;
+
+    void arm() { mask = input_held(); }
+
+    uint8_t read() {
+        const uint8_t held = input_held();
+        mask &= held;
+        return held & (uint8_t)~mask;
+    }
+};
 
 /**
  * Returns a byte from the ROM file at the given address.
@@ -226,6 +353,93 @@ void gb_error(struct gb_s* gb, const enum gb_error_e gb_err, const uint16_t addr
     printf("Error %d occurred: %s at %04X\n.\n", gb_err, gb_err_str[gb_err], addr);
 }
 
+/* The picture is triple buffered.  The emulator draws a whole frame in a few
+ * milliseconds and then waits for the sound, while the video driver shows the
+ * buffer at its own rate: with a single buffer the screen showed a mix of the
+ * old and the new frame (sprites of the new frame over the background of the
+ * old one, or the other way round).  Now the emulator draws into the back
+ * buffer, a complete frame becomes pending, and the render core shows it in
+ * the vertical blank of the display together with its palette.  A frame still
+ * pending when the next one is complete is dropped, so the emulator never
+ * waits for the display.  SCREEN is buffer 0: the text mode and the flash
+ * loader use it as before. */
+static uint8_t SCREEN_2[2][LCD_HEIGHT][LCD_WIDTH];
+static uint8_t (*const frames[3])[LCD_WIDTH] = {SCREEN, SCREEN_2[0], SCREEN_2[1]};
+
+/* Game Boy Color palettes often change in the middle of a frame (the status
+ * bar under the play field gets its own colours).  The buffers keep 8-bit
+ * colour indices, and the video driver turns them into colours while it shows
+ * the frame: the lines drawn before a mid-frame change keep their set, and the
+ * following lines use the next one: up to 3 sets of 64 colours, palette slots
+ * 0..191.  Every frame keeps its own copy of the sets; they go to the video
+ * driver when the frame is shown, so the frame on the screen never changes its
+ * colours.
+ * "Hi-colour" pictures change the palettes on almost every line (thousands of
+ * colours in a frame).  A frame that needs more than 3 sets is drawn in a
+ * fixed 6x6x5 colour cube instead (slots 0..179, 2x2 ordered dither), with the
+ * colours each line had when it was drawn. */
+#define CGB_PAL_SETS 3
+#define CGB_PAL_SIZE (CGB_PAL_SETS * 64)
+#define CGB_CUBE 0xff // frame_sets[]: the frame uses the colour cube
+#define CGB_CUBE_SIZE (6 * 6 * 5)
+static uint32_t frame_pal[3][CGB_PAL_SIZE];
+static uint8_t frame_sets[3]; // sets the frame uses, 0 for a Game Boy frame
+static uint32_t cube_pal[CGB_CUBE_SIZE];
+
+static void cube_pal_init() {
+    for (int r = 0; r < 6; r++)
+        for (int g = 0; g < 6; g++)
+            for (int b = 0; b < 5; b++)
+                cube_pal[(r * 6 + g) * 5 + b] = RGB888(r * 255 / 5, g * 255 / 5, b * 255 / 4);
+}
+
+static critical_section_t frame_lock;
+static volatile int8_t frame_front = 0;    // on the screen (render core)
+static volatile int8_t frame_pending = -1; // complete, to be shown
+static int8_t frame_back = 1;              // being drawn (emulator core)
+
+static uint32_t hw_pal[CGB_PAL_SIZE];      // what the video driver holds (render core)
+static volatile bool hw_pal_invalid = true;
+
+/* emulator core: the back buffer holds a complete frame */
+static void frame_complete() {
+    critical_section_enter_blocking(&frame_lock);
+    const int8_t done = frame_back;
+    const int8_t dropped = frame_pending;
+    frame_pending = done;
+    frame_back = dropped >= 0 ? dropped : 3 - frame_front - done;
+    critical_section_exit(&frame_lock);
+}
+
+/* render core, in the vertical blank: show the pending frame */
+static void __time_critical_func(frame_show)() {
+    critical_section_enter_blocking(&frame_lock);
+    const int8_t p = frame_pending;
+    if (p >= 0) {
+        frame_front = p;
+        frame_pending = -1;
+    }
+    critical_section_exit(&frame_lock);
+    if (p < 0) return;
+    // the emulator core writes neither this buffer nor its palette now
+    if (frame_sets[p]) {
+        if (hw_pal_invalid) {
+            hw_pal_invalid = false;
+            memset(hw_pal, 0xff, sizeof hw_pal); // no colour has all bits set
+        }
+        const bool cube = frame_sets[p] == CGB_CUBE;
+        const uint32_t* pal = cube ? cube_pal : frame_pal[p];
+        const unsigned int n = cube ? CGB_CUBE_SIZE : frame_sets[p] * 64u;
+        for (unsigned int i = 0; i < n; i++) {
+            if (hw_pal[i] != pal[i]) {
+                hw_pal[i] = pal[i];
+                graphics_set_palette(i, pal[i]);
+            }
+        }
+    }
+    graphics_set_buffer((uint8_t *)frames[p], LCD_WIDTH, LCD_HEIGHT);
+}
+
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
@@ -242,14 +456,18 @@ void __time_critical_func(render_core)() {
 #if VGA
     graphics_set_offset(60, 6);
 #endif
-#if HDMI | TV | SOFTTV
+#if HDMI | TV
     graphics_set_offset(80, 48);
+#endif
+#if SOFTTV
+    graphics_set_offset(0, 48); // the TV driver centres the picture itself, with square pixels
 #endif
 
     graphics_set_flashmode(false, false);
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     // clrScr(1);
 
+    render_ready = true;
     sem_acquire_blocking(&vga_start_semaphore);
 
     // 60 FPS loop
@@ -259,11 +477,20 @@ void __time_critical_func(render_core)() {
     uint64_t last_renderer_tick = tick;
 #endif
     uint64_t last_input_tick = tick;
+#ifndef TFT
+    uint32_t frame_count = graphics_frame_count;
+#endif
     while (true) {
 #ifdef TFT
         if (tick >= last_renderer_tick + frame_tick) {
+            frame_show();
             refresh_lcd();
             last_renderer_tick = tick;
+        }
+#else
+        if (frame_count != graphics_frame_count) {
+            frame_count = graphics_frame_count; // the vertical blank of the display
+            frame_show();
         }
 #endif
         if (tick >= last_input_tick + frame_tick * 1) {
@@ -287,15 +514,152 @@ void __time_critical_func(render_core)() {
 /**
  * Draws scanline into framebuffer.
  */
+/* A game rewrites a palette in a burst of writes that may span up to 4 lines;
+ * the whole burst goes into one set (the lines drawn during it show its final
+ * colours).  Writes in the vertical blank need nothing: every frame starts
+ * with the current colours in set 0. */
+static uint8_t cgb_set = 0;                       // the set for the next lines
+static uint8_t cgb_need = 1;                      // sets the frame would need
+static bool cgb_set_used = false;                 // a line was drawn with it
+static uint8_t cgb_last_y = LCD_HEIGHT - 1;
+static int16_t cgb_burst_y = -16;                 // line where the last burst began
+static bool frame_started = false;                // line 0 is in the back buffer
+static bool cgb_cube = false;                     // the frame is drawn in the cube
+static bool cgb_cube_next = false;                // so is the next one
+static uint16_t cgb_raw[CGB_PAL_SETS][64];        // the sets as GBC colours
+static uint8_t cube_q[4][64];                     // cube colour per dither position
+
+static uint16_t cgb_raw_color(const uint8_t i) {
+    const uint8_t* const p = i < 32 ? &gb.cgb.BGPalette[i * 2] : &gb.cgb.OAMPalette[(i - 32) * 2];
+    return p[0] | p[1] << 8; // bits 0-4 red, 5-9 green, 10-14 blue
+}
+
+/* 2x2 ordered dither: position (x & 1) + (y & 1) * 2 */
+static inline uint8_t cube_index(const uint16_t c, const unsigned int pos) {
+    static const uint8_t bayer[4] = {0, 2, 3, 1};
+    const unsigned int k = 2 * bayer[pos] + 1; // threshold (k / 8) of a step
+    const unsigned int r = (c & 31) * 40 + k * 31;
+    const unsigned int g = (c >> 5 & 31) * 40 + k * 31;
+    const unsigned int b = (c >> 10 & 31) * 32 + k * 31;
+    return (r / 248 * 6 + g / 248) * 5 + b / 248;
+}
+
+static void cube_set_color(const uint8_t i) {
+    const uint16_t c = cgb_raw_color(i);
+    for (unsigned int pos = 0; pos < 4; pos++)
+        cube_q[pos][i] = cube_index(c, pos);
+}
+
+static void cgb_load_set(const uint8_t set) {
+    memcpy(&frame_pal[frame_back][set * 64], gb.cgb.fixPalette, sizeof gb.cgb.fixPalette);
+    for (uint8_t i = 0; i < 64; i++)
+        cgb_raw[set][i] = cgb_raw_color(i);
+}
+
+/* a 4th set is needed: the lines drawn so far go into the cube too */
+static void cgb_enter_cube() {
+    static uint8_t q[4][CGB_PAL_SIZE];
+    for (unsigned int v = 0; v < (cgb_set + 1u) * 64; v++)
+        for (unsigned int pos = 0; pos < 4; pos++)
+            q[pos][v] = cube_index(cgb_raw[v >> 6][v & 63], pos);
+    for (unsigned int y = 0; y <= cgb_last_y; y++) {
+        uint8_t* const line = frames[frame_back][y];
+        const uint8_t* const q0 = q[(y & 1) * 2];
+        const uint8_t* const q1 = q[(y & 1) * 2 + 1];
+        for (unsigned int x = 0; x < LCD_WIDTH; x += 2) {
+            line[x] = q0[line[x]];
+            line[x + 1] = q1[line[x + 1]];
+        }
+    }
+    for (uint8_t i = 0; i < 64; i++)
+        cube_set_color(i);
+    cgb_cube = true;
+}
+
+/* a new game, a loaded state, the menu: the video driver gets all colours again */
+static void cgb_palette_reset() {
+    cgb_set = 0;
+    cgb_need = 1;
+    cgb_set_used = false;
+    cgb_last_y = LCD_HEIGHT - 1;
+    cgb_burst_y = -16;
+    cgb_cube = cgb_cube_next = false;
+    hw_pal_invalid = true;
+}
+
+void gb_cgb_palette_changed(const uint8_t index) {
+    if (cgb_last_y >= LCD_HEIGHT - 1)
+        return; // vertical blank (or LCD off after a full frame)
+    if (cgb_last_y > cgb_burst_y + 3 && cgb_set_used) { // a new burst
+        cgb_burst_y = cgb_last_y;
+        cgb_set_used = false;
+        if (cgb_need < 255) cgb_need++;
+        if (!cgb_cube) {
+            if (cgb_set < CGB_PAL_SETS - 1) {
+                cgb_set++; // keep the lines already drawn in their colours
+                cgb_load_set(cgb_set);
+                return;
+            }
+            cgb_enter_cube();
+            return;
+        }
+    }
+    if (cgb_cube)
+        cube_set_color(index);
+    else {
+        frame_pal[frame_back][cgb_set * 64 + index] = gb.cgb.fixPalette[index];
+        cgb_raw[cgb_set][index] = cgb_raw_color(index);
+    }
+}
+
 void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
-    //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    uint8_t* const line = frames[frame_back][y];
+    if (y == 0) frame_started = true;
     if (gb->cgb.cgbMode) {
-        memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+        if (y == 0) {
+            cgb_burst_y = -16;
+            cgb_set = 0;
+            cgb_need = 1;
+            cgb_cube = cgb_cube_next;
+            if (cgb_cube) {
+                for (uint8_t i = 0; i < 64; i++)
+                    cube_set_color(i);
+            }
+            else
+                cgb_load_set(0);
+        }
+        cgb_last_y = y;
+        cgb_set_used = true;
+        if (cgb_cube) {
+            const uint8_t* const q0 = cube_q[(y & 1) * 2];
+            const uint8_t* const q1 = cube_q[(y & 1) * 2 + 1];
+            for (unsigned int x = 0; x < LCD_WIDTH; x += 2) {
+                line[x] = q0[pixels[x]];
+                line[x + 1] = q1[pixels[x + 1]];
+            }
+        }
+        else if (cgb_set == 0) {
+            memcpy((uint32_t *)line, (uint32_t *)pixels, 160);
+        }
+        else {
+            const uint8_t base = cgb_set * 64;
+            for (unsigned int x = 0; x < LCD_WIDTH; x++)
+                line[x] = pixels[x] + base;
+        }
     }
     else {
         for (unsigned int x = 0; x < LCD_WIDTH; x++)
-            SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+            line[x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    }
+    if (y == LCD_HEIGHT - 1 && frame_started) {
+        frame_started = false;
+        if (gb->cgb.cgbMode) {
+            frame_sets[frame_back] = cgb_cube ? CGB_CUBE : cgb_set + 1;
+            cgb_cube_next = cgb_need > CGB_PAL_SETS; // the next frame is likely the same
+        }
+        else
+            frame_sets[frame_back] = 0;
+        frame_complete();
     }
 }
 
@@ -399,100 +763,181 @@ bool isExecutable(const char pathname[255],const char *extensions) {
     return false;
 }
 
-bool __not_in_flash_func(filebrowser_loadfile)(const char pathname[256]) {
-    UINT bytes_read = 0;
-    FIL file;
-
-    constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
-    constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
-
-    draw_window("Loading firmware", window_x, window_y, 43, 5);
-
-    FILINFO fileinfo;
-    f_stat(pathname, &fileinfo);
-
-#if defined(PICO_PC) || defined(BOARD_Z0)
-    /* The ROM goes right after the firmware; the top 512 KB of the flash
-     * stay untouched (pico-launcher lives in the last 260 KB). */
-    if (FLASH_TARGET_OFFSET + fileinfo.fsize > PICO_FLASH_SIZE_BYTES - (512u << 10)) {
-#else
-    if (16384 - 64 << 10 < fileinfo.fsize) {
-#endif
-        draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
-        return false;
-    }
-
-
-    draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
-    sleep_ms(500);
-
-
-    multicore_lockout_start_blocking();
-    auto flash_target_offset = FLASH_TARGET_OFFSET;
 #if PICO_RP2350
-    /* flash_range_erase/program leave XIP through the boot-time XIP setup,
-     * which restores the QMI window-0 timing chosen for the boot clock.
-     * overclock() runs the flash with its own timing at 378+ MHz, so the
-     * boot value would clock the flash far too fast afterwards and every
-     * XIP fetch would return garbage. Keep the overclock timing. */
+/* flash_range_erase/program leave XIP through the boot-time XIP setup, which
+ * restores the QMI window-0 timing chosen for the boot clock.  overclock()
+ * runs the flash with its own timing at 378+ MHz, so the boot value would
+ * clock the flash far too fast afterwards and every XIP fetch would return
+ * garbage.  Keep the overclock setup; nothing runs from flash in between. */
+static void __no_inline_not_in_flash_func(flash_write_sector)(const uint32_t offset, const uint8_t* data) {
     const uint32_t qmi_timing = qmi_hw->m[0].timing;
-    const uint32_t qmi_rfmt   = qmi_hw->m[0].rfmt;
-    const uint32_t qmi_rcmd   = qmi_hw->m[0].rcmd;
-#define RESTORE_QMI() do { qmi_hw->m[0].timing = qmi_timing; qmi_hw->m[0].rfmt = qmi_rfmt; \
-                           qmi_hw->m[0].rcmd = qmi_rcmd; __asm volatile ("dsb; isb" ::: "memory"); } while (0)
+    const uint32_t qmi_rfmt = qmi_hw->m[0].rfmt;
+    const uint32_t qmi_rcmd = qmi_hw->m[0].rcmd;
+    flash_range_erase(offset, FLASH_SECTOR_SIZE);
+    flash_range_program(offset, data, FLASH_SECTOR_SIZE);
+    qmi_hw->m[0].timing = qmi_timing;
+    qmi_hw->m[0].rfmt = qmi_rfmt;
+    qmi_hw->m[0].rcmd = qmi_rcmd;
+    __asm volatile ("dsb; isb" ::: "memory");
+}
 #else
-#define RESTORE_QMI() do { } while (0)
+static void __no_inline_not_in_flash_func(flash_write_sector)(const uint32_t offset, const uint8_t* data) {
+    flash_range_erase(offset, FLASH_SECTOR_SIZE);
+    flash_range_program(offset, data, FLASH_SECTOR_SIZE);
+}
 #endif
-    const uint32_t ints = save_and_disable_interrupts();
-    /* erase whole sectors: the ROM size is rarely a multiple of 4 KB */
-    flash_range_erase(flash_target_offset, (fileinfo.fsize + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1));
-    RESTORE_QMI();
-    restore_interrupts(ints);
 
-    if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        uint8_t buffer[FLASH_PAGE_SIZE];
+/* QSPI PSRAM, when found, takes the ROM directly (no flash wear, no erase);
+ * otherwise it goes to flash sector by sector: a sector that already holds
+ * the same data is not erased again, and every written sector is verified. */
+bool filebrowser_loadfile(const char pathname[256]) {
+    FIL file;
+    FILINFO fileinfo;
 
-        do {
-            f_read(&file, &buffer, FLASH_PAGE_SIZE, &bytes_read);
+    const int window_w = (int)TEXTMODE_COLS < 43 ? (int)TEXTMODE_COLS : 43; // TV NTSC has only 40 columns
+    const int window_y = (TEXTMODE_ROWS - 5) / 2;
+    const int window_x = ((int)TEXTMODE_COLS - window_w) / 2;
 
-            if (bytes_read) {
-                const uint32_t ints = save_and_disable_interrupts();
-                flash_range_program(flash_target_offset, buffer, FLASH_PAGE_SIZE);
-                RESTORE_QMI();
-                restore_interrupts(ints);
+    auto fail = [&](const char* message) {
+        draw_text(message, window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(3000);
+        return false;
+    };
 
-                gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
+    draw_window("Loading ROM", window_x, window_y, window_w, 5);
 
-                flash_target_offset += FLASH_PAGE_SIZE;
-            }
+    if (FR_OK != f_stat(pathname, &fileinfo) || fileinfo.fsize == 0)
+        return fail("ERROR: Can't read the ROM file!   ");
+
+    const size_t load_size = fileinfo.fsize;
+    const bool use_psram = gb_psram_available() && load_size <= gb_psram_size();
+    if (!use_psram && load_size > flash_rom_capacity())
+        return fail("ERROR: ROM too large! Canceled!!  ");
+
+    if (FR_OK != f_open(&file, pathname, FA_READ))
+        return fail("ERROR: Can't open the ROM file!   ");
+
+    draw_text(use_psram ? "Loading into QSPI PSRAM..." : "Loading into Flash...",
+              window_x + 1, window_y + 2, 10, 1);
+
+    size_t total_read = 0;
+    UINT bytes_read = 0;
+    bool verify_failed = false;
+
+    if (use_psram) {
+        rom_magic = 0; // the PSRAM copy is being overwritten
+        uint8_t* dst = (uint8_t *)GB_PSRAM_BASE;
+        while (total_read < load_size) {
+            const UINT chunk = load_size - total_read > 4096 ? 4096 : (UINT)(load_size - total_read);
+            if (FR_OK != f_read(&file, dst + total_read, chunk, &bytes_read) || bytes_read != chunk)
+                break;
+            total_read += bytes_read;
         }
-        while (bytes_read != 0);
+    }
+    else {
+        /* the sector buffer lives in the tail of SCREEN, behind the text
+         * mode: the game redraws the whole picture anyway */
+        uint8_t* const buffer = &SCREEN[0][0] + sizeof(SCREEN) - FLASH_SECTOR_SIZE;
+#ifdef TEXTMODE_COLS_MAX
+        static_assert(TEXTMODE_COLS_MAX * TEXTMODE_ROWS * 2 + FLASH_SECTOR_SIZE <= sizeof(SCREEN),
+                      "no room for the flash sector buffer");
+#else
+        static_assert(TEXTMODE_COLS * TEXTMODE_ROWS * 2 + FLASH_SECTOR_SIZE <= sizeof(SCREEN),
+                      "no room for the flash sector buffer");
+#endif
+        static_assert(sizeof(SCREEN) % 4 == 0, "flash sector buffer must stay word aligned");
+        uint32_t target = FLASH_TARGET_OFFSET;
+        while (total_read < load_size) {
+            const UINT chunk = load_size - total_read > FLASH_SECTOR_SIZE
+                                   ? FLASH_SECTOR_SIZE : (UINT)(load_size - total_read);
+            memset(buffer, 0xff, FLASH_SECTOR_SIZE);
+            if (FR_OK != f_read(&file, buffer, chunk, &bytes_read) || bytes_read != chunk)
+                break;
+            total_read += bytes_read;
 
+            const auto* mapped = (const uint8_t *)(XIP_BASE + target);
+            if (memcmp(mapped, buffer, FLASH_SECTOR_SIZE) != 0) {
+                multicore_lockout_start_blocking();
+                const uint32_t ints = save_and_disable_interrupts();
+                flash_write_sector(target, buffer);
+                restore_interrupts(ints);
+                multicore_lockout_end_blocking();
+                if (memcmp(mapped, buffer, FLASH_SECTOR_SIZE) != 0) {
+                    verify_failed = true;
+                    break;
+                }
+            }
+            target += FLASH_SECTOR_SIZE;
+            gpio_put(PICO_DEFAULT_LED_PIN, target >> 13 & 1);
+        }
         gpio_put(PICO_DEFAULT_LED_PIN, true);
+        memset(buffer, 0, FLASH_SECTOR_SIZE);
     }
     f_close(&file);
-    multicore_lockout_end_blocking();
-    // restore_interrupts(ints);
+
+    if (verify_failed)
+        return fail("ERROR: Flash verify failed!       ");
+    if (total_read != load_size)
+        return fail("ERROR: ROM load failed!           ");
+
+    if (use_psram) {
+        rom_psram_size = load_size;
+        rom_in_psram = 1;
+        rom_magic = ROM_INFO_MAGIC;
+        rom = (const uint8_t *)GB_PSRAM_BASE;
+    }
+    else {
+        rom_in_psram = 0; // a PSRAM copy, if any, is no longer the latest ROM
+        rom = FLASH_ROM;
+    }
     return true;
 }
 
-void __not_in_flash_func(filebrowser)(const char pathname[256], const char executables[11]) {
-    bool debounce = true;
+/* Where the browser was left: re-entering it opens the same directory with
+ * the same entry under the cursor (e.g. the ROM that was just played). */
+static char fb_dir[256] = "\\GB";
+static char fb_focus[80] = "";
+
+static void fb_remember(const char* dir, const char* name) {
+    strncpy(fb_dir, dir, sizeof fb_dir - 1);
+    fb_dir[sizeof fb_dir - 1] = '\0';
+    strncpy(fb_focus, name, sizeof fb_focus - 1);
+    fb_focus[sizeof fb_focus - 1] = '\0';
+}
+
+/* Returns when a ROM is ready to run: a newly loaded one (START) or the
+ * previous one (SELECT). */
+void filebrowser(const char executables[11]) {
+    input_gate_t gate;
     char basepath[256];
+    char focus[80];
     char tmp[TEXTMODE_COLS + 1];
-    strcpy(basepath, pathname);
+    strcpy(basepath, fb_dir);
+    strcpy(focus, fb_focus);
     constexpr int per_page = TEXTMODE_ROWS - 3;
 
     DIR dir;
     FILINFO fileInfo;
 
     while (true) {
+        gate.arm();
         memset(fileItems, 0, sizeof(file_item_t) * max_files);
         int total_files = 0;
 
+        if (FR_OK != f_opendir(&dir, basepath)) {
+            if (strcmp(basepath, HOME_DIR) != 0) {
+                // the remembered directory is gone (another SD card?)
+                strcpy(basepath, HOME_DIR);
+                focus[0] = '\0';
+                continue;
+            }
+            draw_text("Failed to open directory", 1, 1, 4, 0);
+            while (true);
+        }
+
         snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
         draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+        draw_text(gb_psram_available() ? "QSPI PSRAM" : "FLASH", TEXTMODE_COLS - 11, 0, 10, 1);
         memset(tmp, ' ', TEXTMODE_COLS);
 
 
@@ -516,11 +961,6 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
         draw_text(" USB DRV ", off, 29, 0, 3);
 #endif
 
-        if (FR_OK != f_opendir(&dir, basepath)) {
-            draw_text("Failed to open directory", 1, 1, 4, 0);
-            while (true);
-        }
-
         if (strlen(basepath) > 0) {
             strcpy(fileItems[total_files].filename, "..\0");
             fileItems[total_files].is_directory = true;
@@ -535,7 +975,9 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
             // Set the file item properties
             fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
             fileItems[total_files].size = fileInfo.fsize;
-            fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
+            fileItems[total_files].is_executable = !(fileInfo.fattrib & AM_DIR) &&
+                                                   rom_fits(fileInfo.fsize) &&
+                                                   isExecutable(fileInfo.fname, executables);
             strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
             total_files++;
         }
@@ -550,19 +992,35 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
         int offset = 0;
         int current_item = 0;
 
+        /* Scroll the remembered entry into view, near the middle of the page
+         * when possible and clamped at the beginning/end of the list. */
+        if (focus[0]) {
+            for (int i = 0; i < total_files; ++i) {
+                if (!strcmp(fileItems[i].filename, focus)) {
+                    constexpr int preferred_row = per_page / 2;
+                    const int max_offset = total_files > per_page ? total_files - per_page : 0;
+                    offset = i > preferred_row ? i - preferred_row : 0;
+                    if (offset > max_offset) offset = max_offset;
+                    current_item = i - offset;
+                    break;
+                }
+            }
+            focus[0] = '\0';
+        }
+
         while (true) {
             sleep_ms(100);
 
-            if (!debounce) {
-                debounce = !(gamepad_bits.start);
-            }
+            const uint8_t keys = gate.read();
 
-            // ESCAPE
-            if (gamepad_bits.select) {
+            // SELECT: run the previous cartridge
+            if (keys & BTN_SELECT) {
+                fb_remember(basepath, fileItems[offset + current_item].filename);
+                rom = previous_rom();
                 return;
             }
 
-            if (gamepad_bits.down) {
+            if (keys & BTN_DOWN) {
                 if (offset + (current_item + 1) < total_files) {
                     if (current_item + 1 < per_page) {
                         current_item++;
@@ -573,7 +1031,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
                 }
             }
 
-            if (gamepad_bits.up) {
+            if (keys & BTN_UP) {
                 if (current_item > 0) {
                     current_item--;
                 }
@@ -582,14 +1040,14 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
                 }
             }
 
-            if (gamepad_bits.right) {
+            if (keys & BTN_RIGHT) {
                 offset += per_page;
                 if (offset + (current_item + 1) > total_files) {
                     offset = total_files - (current_item + 1);
                 }
             }
 
-            if (gamepad_bits.left) {
+            if (keys & BTN_LEFT) {
                 if (offset > per_page) {
                     offset -= per_page;
                 }
@@ -599,29 +1057,68 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char execu
                 }
             }
 
-            if (debounce && gamepad_bits.start) {
-                auto file_at_cursor = fileItems[offset + current_item];
+            if (total_files > 0 && (kbd_page_down || kbd_page_up || kbd_home || kbd_end)) {
+                const int last = total_files - 1;
+                const int per_page_half = per_page >> 1;
+                const int max_offset = total_files > per_page_half ? total_files - per_page_half : 0;
+                int pos = offset + current_item;
+                if (kbd_page_down) {
+                    pos += per_page_half;
+                    offset += per_page_half;
+                }
+                else if (kbd_page_up) {
+                    pos -= per_page_half;
+                    offset -= per_page_half;
+                }
+                else if (kbd_home) {
+                    pos = 0;
+                    offset = 0;
+                }
+                else {
+                    pos = last;
+                    offset = max_offset;
+                }
+                if (pos > last) pos = last;
+                if (pos < 0) pos = 0;
+                if (offset > max_offset) offset = max_offset;
+                if (offset < 0) offset = 0;
+                if (pos < offset) offset = pos;
+                if (pos >= offset + per_page_half) offset = pos - per_page_half + 1;
+                current_item = pos - offset;
+            }
+
+            if (keys & BTN_START) {
+                const auto& file_at_cursor = fileItems[offset + current_item];
 
                 if (file_at_cursor.is_directory) {
                     if (strcmp(file_at_cursor.filename, "..") == 0) {
                         const char* lastBackslash = strrchr(basepath, '\\');
                         if (lastBackslash != nullptr) {
-                            const size_t length = lastBackslash - basepath;
-                            basepath[length] = '\0';
+                            // come back to the directory we have just left
+                            strncpy(focus, lastBackslash + 1, sizeof focus - 1);
+                            focus[sizeof focus - 1] = '\0';
+                            basepath[lastBackslash - basepath] = '\0';
                         }
                     }
                     else {
-                        sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
+                        char subdir[256];
+                        if (snprintf(subdir, sizeof subdir, "%s\\%s", basepath, file_at_cursor.filename) <
+                            (int)sizeof subdir)
+                            strcpy(basepath, subdir);
                     }
-                    debounce = false;
                     break;
                 }
 
                 if (file_at_cursor.is_executable) {
-                    sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
-
-                    filebrowser_loadfile(tmp);
-                    return;
+                    char fullpath[256];
+                    if (snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath, file_at_cursor.filename) <
+                        (int)sizeof fullpath && filebrowser_loadfile(fullpath)) {
+                        fb_remember(basepath, file_at_cursor.filename);
+                        return;
+                    }
+                    // the error window covered the list: redraw it, same entry
+                    strcpy(focus, file_at_cursor.filename);
+                    break;
                 }
             }
 
@@ -707,6 +1204,7 @@ bool overclock() {
     *qmi_m0_timing = 0x60007204;
     set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);
     *qmi_m0_timing = 0x60007303;
+    gb_psram_reclock(); // QMI CS1 timing depends on clk_sys (no-op without PSRAM)
     return true;
 #else
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
@@ -755,32 +1253,23 @@ static bool load() {
     f_read(&fd, &gb, sizeof(gb), &br);
     f_read(&fd, ram, sizeof(ram), &br);
     f_close(&fd);
+    cgb_palette_reset(); // the loaded GBC palette is not in the video driver yet
     return true;
 }
-#if SOFTTV
-typedef struct tv_out_mode_t {
-    // double color_freq;
-    float color_index;
-    COLOR_FREQ_t c_freq;
-    enum graphics_mode_t mode_bpp;
-    g_out_TV_t tv_system;
-    NUM_TV_LINES_t N_lines;
-    bool cb_sync_PI_shift_lines;
-    bool cb_sync_PI_shift_half_frame;
-} tv_out_mode_t;
-extern tv_out_mode_t tv_out_mode;
-
-bool color_mode=true;
-bool toggle_color() {
-    color_mode=!color_mode;
-    if(color_mode) {
-        tv_out_mode.color_index= 1.0f;
-    } else {
-        tv_out_mode.color_index= 0.0f;
-    }
-
-    return true;
-}
+/* TV-SOFT: a TV standard is a coherent set (lines, colour subcarrier,
+ * sync), so the menu only selects the system; the game is always in colour. */
+static uint8_t tv_system = 0; // 0 - PAL, 1 - NTSC
+/* HDMI / VGA / TV-SOFT: picture size (enum graphics_scale_t), by default as
+ * the drivers showed it before: HDMI and TV 2x, VGA 3x */
+#if VGA
+static uint8_t screen_scale = 1;
+#else
+static uint8_t screen_scale = 0;
+#endif
+#ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
+#define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
+#else
+#define TEXT_BUFFER_COLS TEXTMODE_COLS
 #endif
 const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -808,12 +1297,11 @@ const MenuItem menu_items[] = {
     { "Load state: %i", INT, &save_slot, &load, 8 },
 #if SOFTTV
     { "" },
-    { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
-    { "TV Lines %s", ARRAY, &tv_out_mode.N_lines, nullptr, 3, { "624", "625", "524", "525" } },
-    { "Freq %s", ARRAY, &tv_out_mode.c_freq, nullptr, 1, { "3.579545", "4.433619" } },
-    { "Colors: %s", ARRAY, &color_mode, &toggle_color, 1, { "NO ", "YES" } },
-    { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
-    { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
+    { "TV system %s", ARRAY, &tv_system, nullptr, 1, { "PAL ", "NTSC" } },
+#endif
+#if VGA || HDMI || SOFTTV
+    { "" },
+    { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
 #endif
     {},
 {
@@ -832,6 +1320,10 @@ static void f_load_conf(void) {
         UINT br;
         f_read(&f, &swap_ab, 1, &br);
         f_read(&f, &manual_palette_selected, 1, &br);
+        // the same layout for all builds; older configs end earlier
+        uint8_t v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= 1) tv_system = v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= GRAPHICS_SCALE_STRETCH) screen_scale = v;
         f_close(&f);
     }
 }
@@ -843,6 +1335,8 @@ static void f_save_conf(void) {
     UINT br;
     f_write(&f, &swap_ab, 1, &br);
     f_write(&f, &manual_palette_selected, 1, &br);
+    f_write(&f, &tv_system, 1, &br);
+    f_write(&f, &screen_scale, 1, &br);
     f_close(&f);
 }
 
@@ -856,8 +1350,16 @@ void menu() {
              __TIME__);
     draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS - 1, 11, 1);
     uint current_item = 0;
+    /* Only fresh presses count: the Start+Select that opened the menu must be
+     * released first, so it can't change or activate the first item. */
+    uint8_t prev_keys = input_held();
 
     while (!exit) {
+        const uint8_t held_keys = input_held();
+        const uint8_t pressed = held_keys & (uint8_t)~prev_keys;
+        prev_keys = held_keys;
+        const bool activate = pressed & BTN_START;
+
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
             uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
             uint8_t x = TEXTMODE_COLS / 2 - 10;
@@ -874,21 +1376,21 @@ void menu() {
                     case ARRAY:
                         if (item->max_value != 0) {
                             auto* value = (uint8_t *)item->value;
-                            if (gamepad_bits.right && *value < item->max_value) {
+                            if ((pressed & BTN_RIGHT) && *value < item->max_value) {
                                 (*value)++;
                             }
-                            if (gamepad_bits.left && *value > 0) {
+                            if ((pressed & BTN_LEFT) && *value > 0) {
                                 (*value)--;
                             }
                         }
                         break;
                     case RETURN:
-                        if (gamepad_bits.start)
+                        if (activate)
                             exit = true;
                         break;
 
                     case ROM_SELECT:
-                        if (gamepad_bits.start) {
+                        if (activate) {
                             restart = true;
                             return;
                         }
@@ -897,11 +1399,11 @@ void menu() {
                         break;
                 }
 
-                if (nullptr != item->callback && gamepad_bits.start) {
+                if (nullptr != item->callback && activate) {
                     exit = item->callback();
                 }
             }
-            static char result[TEXTMODE_COLS];
+            static char result[TEXT_BUFFER_COLS];
             switch (item->type) {
                 case INT:
                     snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *)item->value);
@@ -920,20 +1422,20 @@ void menu() {
             draw_text(result, x, y, color, bg_color);
         }
 
-        if (gamepad_bits.down) {
+        if (pressed & BTN_DOWN) {
             current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
 
             if (menu_items[current_item].type == NONE)
                 current_item++;
         }
-        if (gamepad_bits.up) {
+        if (pressed & BTN_UP) {
             current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
 
             if (menu_items[current_item].type == NONE)
                 current_item--;
         }
 
-        sleep_ms(125);
+        sleep_ms(25);
     }
     if (manual_palette_selected > 0) {
         manual_assign_palette(palette16, manual_palette_selected);
@@ -941,24 +1443,40 @@ void menu() {
         char rom_title[16];
         auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
     }
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 4; j++) {
-            graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-            palette[i][j] = i * 4 + j;
-        }
+    // a Game Boy Color game keeps its own palette in slots 0..63
+    if (!gb.cgb.cgbMode)
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 4; j++) {
+                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
+                palette[i][j] = i * 4 + j;
+            }
     f_save_conf();
+#if SOFTTV
+    graphics_set_tv(tv_system == 0, true); // applied by graphics_set_mode()
+#endif
+#if VGA || HDMI || SOFTTV
+    graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
 
 int main() {
+    detect_flash_size();
     overclock();
+    /* QMI CS1 setup before core1 starts: the probe briefly blocks XIP */
+    gb_psram_init();
 
     ps2kbd.init_gpio();
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 
     sem_init(&vga_start_semaphore, 0, 1);
+    critical_section_init(&frame_lock);
+    cube_pal_init();
     multicore_launch_core1(render_core);
     sem_release(&vga_start_semaphore);
+    // Do not draw before the video driver has its text buffer:
+    // draw_text() into a NULL text_buffer is lost.
+    while (!render_ready) tight_loop_contents();
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
@@ -987,17 +1505,24 @@ int main() {
     } else {
         f_mkdir(HOME_DIR);
         f_load_conf();
+#if SOFTTV
+        graphics_set_tv(tv_system == 0, true); // applied by the next graphics_set_mode()
+#endif
+#if VGA || HDMI || SOFTTV
+        graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
     }
 
     while (true) {
         /* ROM File selector */
         if (FR_OK == fr) {
             graphics_set_mode(TEXTMODE_DEFAULT);
-            filebrowser(HOME_DIR, "gbc,gb");
+            filebrowser("gbc,gb");
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 
         /* Initialise GB context. */
+        cgb_palette_reset();
         gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
                                       &gb_cart_ram_write, &gb_error, nullptr);
 
@@ -1026,6 +1551,10 @@ int main() {
         /* Load Save File. */
         read_cart_ram_file(&gb);
 
+        // the Enter/Start that launched the ROM must not reach the game
+        input_gate_t game_gate;
+        game_gate.arm();
+
         //=============================================================================
         while (!restart) {
             //------------------------------------------------------------------------------
@@ -1037,37 +1566,47 @@ int main() {
                     save_slot = fxPressedV;
                     save();
                 }
+                fxPressedV = 0; // once per key press, not on every frame
             }
-            gb.direct.joypad_bits.up = !gamepad_bits.up;
-            gb.direct.joypad_bits.down = !gamepad_bits.down;
-            gb.direct.joypad_bits.left = !gamepad_bits.left;
-            gb.direct.joypad_bits.right = !gamepad_bits.right;
-            gb.direct.joypad_bits.a = !gamepad_bits.a;
-            gb.direct.joypad_bits.b = !gamepad_bits.b;
-            gb.direct.joypad_bits.select = !gamepad_bits.select;
-            gb.direct.joypad_bits.start = !gamepad_bits.start;
+            const uint8_t keys = game_gate.read();
+            gb.direct.joypad_bits.up = !(keys & BTN_UP);
+            gb.direct.joypad_bits.down = !(keys & BTN_DOWN);
+            gb.direct.joypad_bits.left = !(keys & BTN_LEFT);
+            gb.direct.joypad_bits.right = !(keys & BTN_RIGHT);
+            gb.direct.joypad_bits.a = !(keys & BTN_A);
+            gb.direct.joypad_bits.b = !(keys & BTN_B);
+            gb.direct.joypad_bits.select = !(keys & BTN_SELECT);
+            gb.direct.joypad_bits.start = !(keys & BTN_START);
 
             //gb.direct.joypad = nespad_state;
             //------------------------------------------------------------------------------
             /* hotkeys (select + * combo)*/
+            static int keydown_counter = 0;
             if (!(gb.direct.joypad & 0b00001100) || nespad_state & DPAD_X) {
-
-                static int keydown_counter = 0;
                 char romname[24];
 
                 gb_get_rom_name(&gb, romname);
 
                 if (nullptr != strstr(romname, "ZELDA")) {
-                    // half a second
+                    // half a second (the game itself uses Start+Select)
                     if (keydown_counter++ > 30) {
                         menu();
+                        cgb_palette_reset(); // the menu may have changed the video palette
                         keydown_counter = 0;
+                        game_gate.arm();
                     }
                 }
 
                 else {
                     menu();
+                    cgb_palette_reset(); // the menu may have changed the video palette
+                    // keys still held on leaving the menu (Enter on "Return to game",
+                    // the Start+Select combination) must not reach the game
+                    game_gate.arm();
                 }
+            }
+            else {
+                keydown_counter = 0; // the half second counts one continuous hold
             }
             // TODO F2
             if ((nespad_state & DPAD_RT)) {

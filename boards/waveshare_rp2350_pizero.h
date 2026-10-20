@@ -8,6 +8,10 @@
 #define BOARD_Z0 1
 #define CPU_FREQ 252
 
+// QSPI PSRAM on QMI CS1 (src/psram.c): probed at start, used for ROMs if found
+#define PSRAM_CS1_GPIO_RP2350A 8
+#define PSRAM_CS1_GPIO_RP2350B 47
+
 // 16 MB flash
 #ifndef PICO_FLASH_SIZE_BYTES
 #define PICO_FLASH_SIZE_BYTES (16 * 1024 * 1024)

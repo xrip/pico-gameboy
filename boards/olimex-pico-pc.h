@@ -6,6 +6,10 @@
 #include "boards/pico.h"
 #endif
 
+// QSPI PSRAM on QMI CS1 (src/psram.c): probed at start, used for ROMs if found
+#define PSRAM_CS1_GPIO_RP2350A 8
+#define PSRAM_CS1_GPIO_RP2350B 47
+
 #define PICO_PC 1
 
 // SDCARD
