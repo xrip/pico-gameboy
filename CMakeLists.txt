@@ -53,7 +53,7 @@ option(m1p2launcher "Enable m1p2-launcher support" OFF)
 endif()
 
 #set(m1p2launcher ON)
-set(I2S ON)
+#set(I2S ON)
 #set(TFT ON)
 #set(ILI9341 ON)
 #set(HDMI ON)

@@ -33,6 +33,7 @@ static int graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
 static volatile enum graphics_scale_t graphics_scale = GRAPHICS_SCALE_2X;
+volatile uint32_t graphics_frame_count = 0;
 
 //текстовый буфер
 uint8_t* text_buffer = NULL;
@@ -179,6 +180,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
     dma_channel_set_read_addr(dma_chan_ctrl, &DMA_BUF_ADDR[inx_buf_dma & 1], false);
 
     line = line >= 524 ? 0 : line + 1;
+    if (line == 480) graphics_frame_count++; // the vertical blank begins
 
     /* 2x and the text mode change the line buffer on every second physical
      * line.  3x and the stretched picture need single physical lines: the

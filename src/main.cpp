@@ -37,6 +37,7 @@
 #include <pico/stdio.h>
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
+#include <pico/critical_section.h>
 #include <sys/unistd.h>
 #include <hardware/watchdog.h>
 #include <hardware/clocks.h>
@@ -352,6 +353,93 @@ void gb_error(struct gb_s* gb, const enum gb_error_e gb_err, const uint16_t addr
     printf("Error %d occurred: %s at %04X\n.\n", gb_err, gb_err_str[gb_err], addr);
 }
 
+/* The picture is triple buffered.  The emulator draws a whole frame in a few
+ * milliseconds and then waits for the sound, while the video driver shows the
+ * buffer at its own rate: with a single buffer the screen showed a mix of the
+ * old and the new frame (sprites of the new frame over the background of the
+ * old one, or the other way round).  Now the emulator draws into the back
+ * buffer, a complete frame becomes pending, and the render core shows it in
+ * the vertical blank of the display together with its palette.  A frame still
+ * pending when the next one is complete is dropped, so the emulator never
+ * waits for the display.  SCREEN is buffer 0: the text mode and the flash
+ * loader use it as before. */
+static uint8_t SCREEN_2[2][LCD_HEIGHT][LCD_WIDTH];
+static uint8_t (*const frames[3])[LCD_WIDTH] = {SCREEN, SCREEN_2[0], SCREEN_2[1]};
+
+/* Game Boy Color palettes often change in the middle of a frame (the status
+ * bar under the play field gets its own colours).  The buffers keep 8-bit
+ * colour indices, and the video driver turns them into colours while it shows
+ * the frame: the lines drawn before a mid-frame change keep their set, and the
+ * following lines use the next one: up to 3 sets of 64 colours, palette slots
+ * 0..191.  Every frame keeps its own copy of the sets; they go to the video
+ * driver when the frame is shown, so the frame on the screen never changes its
+ * colours.
+ * "Hi-colour" pictures change the palettes on almost every line (thousands of
+ * colours in a frame).  A frame that needs more than 3 sets is drawn in a
+ * fixed 6x6x5 colour cube instead (slots 0..179, 2x2 ordered dither), with the
+ * colours each line had when it was drawn. */
+#define CGB_PAL_SETS 3
+#define CGB_PAL_SIZE (CGB_PAL_SETS * 64)
+#define CGB_CUBE 0xff // frame_sets[]: the frame uses the colour cube
+#define CGB_CUBE_SIZE (6 * 6 * 5)
+static uint32_t frame_pal[3][CGB_PAL_SIZE];
+static uint8_t frame_sets[3]; // sets the frame uses, 0 for a Game Boy frame
+static uint32_t cube_pal[CGB_CUBE_SIZE];
+
+static void cube_pal_init() {
+    for (int r = 0; r < 6; r++)
+        for (int g = 0; g < 6; g++)
+            for (int b = 0; b < 5; b++)
+                cube_pal[(r * 6 + g) * 5 + b] = RGB888(r * 255 / 5, g * 255 / 5, b * 255 / 4);
+}
+
+static critical_section_t frame_lock;
+static volatile int8_t frame_front = 0;    // on the screen (render core)
+static volatile int8_t frame_pending = -1; // complete, to be shown
+static int8_t frame_back = 1;              // being drawn (emulator core)
+
+static uint32_t hw_pal[CGB_PAL_SIZE];      // what the video driver holds (render core)
+static volatile bool hw_pal_invalid = true;
+
+/* emulator core: the back buffer holds a complete frame */
+static void frame_complete() {
+    critical_section_enter_blocking(&frame_lock);
+    const int8_t done = frame_back;
+    const int8_t dropped = frame_pending;
+    frame_pending = done;
+    frame_back = dropped >= 0 ? dropped : 3 - frame_front - done;
+    critical_section_exit(&frame_lock);
+}
+
+/* render core, in the vertical blank: show the pending frame */
+static void __time_critical_func(frame_show)() {
+    critical_section_enter_blocking(&frame_lock);
+    const int8_t p = frame_pending;
+    if (p >= 0) {
+        frame_front = p;
+        frame_pending = -1;
+    }
+    critical_section_exit(&frame_lock);
+    if (p < 0) return;
+    // the emulator core writes neither this buffer nor its palette now
+    if (frame_sets[p]) {
+        if (hw_pal_invalid) {
+            hw_pal_invalid = false;
+            memset(hw_pal, 0xff, sizeof hw_pal); // no colour has all bits set
+        }
+        const bool cube = frame_sets[p] == CGB_CUBE;
+        const uint32_t* pal = cube ? cube_pal : frame_pal[p];
+        const unsigned int n = cube ? CGB_CUBE_SIZE : frame_sets[p] * 64u;
+        for (unsigned int i = 0; i < n; i++) {
+            if (hw_pal[i] != pal[i]) {
+                hw_pal[i] = pal[i];
+                graphics_set_palette(i, pal[i]);
+            }
+        }
+    }
+    graphics_set_buffer((uint8_t *)frames[p], LCD_WIDTH, LCD_HEIGHT);
+}
+
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
@@ -389,11 +477,20 @@ void __time_critical_func(render_core)() {
     uint64_t last_renderer_tick = tick;
 #endif
     uint64_t last_input_tick = tick;
+#ifndef TFT
+    uint32_t frame_count = graphics_frame_count;
+#endif
     while (true) {
 #ifdef TFT
         if (tick >= last_renderer_tick + frame_tick) {
+            frame_show();
             refresh_lcd();
             last_renderer_tick = tick;
+        }
+#else
+        if (frame_count != graphics_frame_count) {
+            frame_count = graphics_frame_count; // the vertical blank of the display
+            frame_show();
         }
 #endif
         if (tick >= last_input_tick + frame_tick * 1) {
@@ -417,15 +514,152 @@ void __time_critical_func(render_core)() {
 /**
  * Draws scanline into framebuffer.
  */
+/* A game rewrites a palette in a burst of writes that may span up to 4 lines;
+ * the whole burst goes into one set (the lines drawn during it show its final
+ * colours).  Writes in the vertical blank need nothing: every frame starts
+ * with the current colours in set 0. */
+static uint8_t cgb_set = 0;                       // the set for the next lines
+static uint8_t cgb_need = 1;                      // sets the frame would need
+static bool cgb_set_used = false;                 // a line was drawn with it
+static uint8_t cgb_last_y = LCD_HEIGHT - 1;
+static int16_t cgb_burst_y = -16;                 // line where the last burst began
+static bool frame_started = false;                // line 0 is in the back buffer
+static bool cgb_cube = false;                     // the frame is drawn in the cube
+static bool cgb_cube_next = false;                // so is the next one
+static uint16_t cgb_raw[CGB_PAL_SETS][64];        // the sets as GBC colours
+static uint8_t cube_q[4][64];                     // cube colour per dither position
+
+static uint16_t cgb_raw_color(const uint8_t i) {
+    const uint8_t* const p = i < 32 ? &gb.cgb.BGPalette[i * 2] : &gb.cgb.OAMPalette[(i - 32) * 2];
+    return p[0] | p[1] << 8; // bits 0-4 red, 5-9 green, 10-14 blue
+}
+
+/* 2x2 ordered dither: position (x & 1) + (y & 1) * 2 */
+static inline uint8_t cube_index(const uint16_t c, const unsigned int pos) {
+    static const uint8_t bayer[4] = {0, 2, 3, 1};
+    const unsigned int k = 2 * bayer[pos] + 1; // threshold (k / 8) of a step
+    const unsigned int r = (c & 31) * 40 + k * 31;
+    const unsigned int g = (c >> 5 & 31) * 40 + k * 31;
+    const unsigned int b = (c >> 10 & 31) * 32 + k * 31;
+    return (r / 248 * 6 + g / 248) * 5 + b / 248;
+}
+
+static void cube_set_color(const uint8_t i) {
+    const uint16_t c = cgb_raw_color(i);
+    for (unsigned int pos = 0; pos < 4; pos++)
+        cube_q[pos][i] = cube_index(c, pos);
+}
+
+static void cgb_load_set(const uint8_t set) {
+    memcpy(&frame_pal[frame_back][set * 64], gb.cgb.fixPalette, sizeof gb.cgb.fixPalette);
+    for (uint8_t i = 0; i < 64; i++)
+        cgb_raw[set][i] = cgb_raw_color(i);
+}
+
+/* a 4th set is needed: the lines drawn so far go into the cube too */
+static void cgb_enter_cube() {
+    static uint8_t q[4][CGB_PAL_SIZE];
+    for (unsigned int v = 0; v < (cgb_set + 1u) * 64; v++)
+        for (unsigned int pos = 0; pos < 4; pos++)
+            q[pos][v] = cube_index(cgb_raw[v >> 6][v & 63], pos);
+    for (unsigned int y = 0; y <= cgb_last_y; y++) {
+        uint8_t* const line = frames[frame_back][y];
+        const uint8_t* const q0 = q[(y & 1) * 2];
+        const uint8_t* const q1 = q[(y & 1) * 2 + 1];
+        for (unsigned int x = 0; x < LCD_WIDTH; x += 2) {
+            line[x] = q0[line[x]];
+            line[x + 1] = q1[line[x + 1]];
+        }
+    }
+    for (uint8_t i = 0; i < 64; i++)
+        cube_set_color(i);
+    cgb_cube = true;
+}
+
+/* a new game, a loaded state, the menu: the video driver gets all colours again */
+static void cgb_palette_reset() {
+    cgb_set = 0;
+    cgb_need = 1;
+    cgb_set_used = false;
+    cgb_last_y = LCD_HEIGHT - 1;
+    cgb_burst_y = -16;
+    cgb_cube = cgb_cube_next = false;
+    hw_pal_invalid = true;
+}
+
+void gb_cgb_palette_changed(const uint8_t index) {
+    if (cgb_last_y >= LCD_HEIGHT - 1)
+        return; // vertical blank (or LCD off after a full frame)
+    if (cgb_last_y > cgb_burst_y + 3 && cgb_set_used) { // a new burst
+        cgb_burst_y = cgb_last_y;
+        cgb_set_used = false;
+        if (cgb_need < 255) cgb_need++;
+        if (!cgb_cube) {
+            if (cgb_set < CGB_PAL_SETS - 1) {
+                cgb_set++; // keep the lines already drawn in their colours
+                cgb_load_set(cgb_set);
+                return;
+            }
+            cgb_enter_cube();
+            return;
+        }
+    }
+    if (cgb_cube)
+        cube_set_color(index);
+    else {
+        frame_pal[frame_back][cgb_set * 64 + index] = gb.cgb.fixPalette[index];
+        cgb_raw[cgb_set][index] = cgb_raw_color(index);
+    }
+}
+
 void __always_inline lcd_draw_line(struct gb_s* gb, const uint8_t pixels[160], const uint_fast8_t y) {
-    // memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
-    //         screen[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    uint8_t* const line = frames[frame_back][y];
+    if (y == 0) frame_started = true;
     if (gb->cgb.cgbMode) {
-        memcpy((uint32_t *)SCREEN[y], (uint32_t *)pixels, 160);
+        if (y == 0) {
+            cgb_burst_y = -16;
+            cgb_set = 0;
+            cgb_need = 1;
+            cgb_cube = cgb_cube_next;
+            if (cgb_cube) {
+                for (uint8_t i = 0; i < 64; i++)
+                    cube_set_color(i);
+            }
+            else
+                cgb_load_set(0);
+        }
+        cgb_last_y = y;
+        cgb_set_used = true;
+        if (cgb_cube) {
+            const uint8_t* const q0 = cube_q[(y & 1) * 2];
+            const uint8_t* const q1 = cube_q[(y & 1) * 2 + 1];
+            for (unsigned int x = 0; x < LCD_WIDTH; x += 2) {
+                line[x] = q0[pixels[x]];
+                line[x + 1] = q1[pixels[x + 1]];
+            }
+        }
+        else if (cgb_set == 0) {
+            memcpy((uint32_t *)line, (uint32_t *)pixels, 160);
+        }
+        else {
+            const uint8_t base = cgb_set * 64;
+            for (unsigned int x = 0; x < LCD_WIDTH; x++)
+                line[x] = pixels[x] + base;
+        }
     }
     else {
         for (unsigned int x = 0; x < LCD_WIDTH; x++)
-            SCREEN[y][x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+            line[x] = palette[(pixels[x] & LCD_PALETTE_ALL) >> 4][pixels[x] & 3];
+    }
+    if (y == LCD_HEIGHT - 1 && frame_started) {
+        frame_started = false;
+        if (gb->cgb.cgbMode) {
+            frame_sets[frame_back] = cgb_cube ? CGB_CUBE : cgb_set + 1;
+            cgb_cube_next = cgb_need > CGB_PAL_SETS; // the next frame is likely the same
+        }
+        else
+            frame_sets[frame_back] = 0;
+        frame_complete();
     }
 }
 
@@ -1019,13 +1253,14 @@ static bool load() {
     f_read(&fd, &gb, sizeof(gb), &br);
     f_read(&fd, ram, sizeof(ram), &br);
     f_close(&fd);
+    cgb_palette_reset(); // the loaded GBC palette is not in the video driver yet
     return true;
 }
 /* TV-SOFT: a TV standard is a coherent set (lines, colour subcarrier,
  * sync), so the menu only selects the system; the game is always in colour. */
 static uint8_t tv_system = 0; // 0 - PAL, 1 - NTSC
-/* HDMI / VGA: picture size on 640x480 (enum graphics_scale_t), by default as
- * the drivers showed it before: HDMI 2x, VGA 3x */
+/* HDMI / VGA / TV-SOFT: picture size (enum graphics_scale_t), by default as
+ * the drivers showed it before: HDMI and TV 2x, VGA 3x */
 #if VGA
 static uint8_t screen_scale = 1;
 #else
@@ -1064,7 +1299,7 @@ const MenuItem menu_items[] = {
     { "" },
     { "TV system %s", ARRAY, &tv_system, nullptr, 1, { "PAL ", "NTSC" } },
 #endif
-#if VGA || HDMI
+#if VGA || HDMI || SOFTTV
     { "" },
     { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
 #endif
@@ -1219,7 +1454,7 @@ void menu() {
 #if SOFTTV
     graphics_set_tv(tv_system == 0, true); // applied by graphics_set_mode()
 #endif
-#if VGA || HDMI
+#if VGA || HDMI || SOFTTV
     graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
@@ -1235,6 +1470,8 @@ int main() {
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 
     sem_init(&vga_start_semaphore, 0, 1);
+    critical_section_init(&frame_lock);
+    cube_pal_init();
     multicore_launch_core1(render_core);
     sem_release(&vga_start_semaphore);
     // Do not draw before the video driver has its text buffer:
@@ -1271,7 +1508,7 @@ int main() {
 #if SOFTTV
         graphics_set_tv(tv_system == 0, true); // applied by the next graphics_set_mode()
 #endif
-#if VGA || HDMI
+#if VGA || HDMI || SOFTTV
         graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
     }
@@ -1285,6 +1522,7 @@ int main() {
         }
 
         /* Initialise GB context. */
+        cgb_palette_reset();
         gb_init_error_e ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read,
                                       &gb_cart_ram_write, &gb_error, nullptr);
 
@@ -1353,6 +1591,7 @@ int main() {
                     // half a second (the game itself uses Start+Select)
                     if (keydown_counter++ > 30) {
                         menu();
+                        cgb_palette_reset(); // the menu may have changed the video palette
                         keydown_counter = 0;
                         game_gate.arm();
                     }
@@ -1360,6 +1599,7 @@ int main() {
 
                 else {
                     menu();
+                    cgb_palette_reset(); // the menu may have changed the video palette
                     // keys still held on leaving the menu (Enter on "Return to game",
                     // the Start+Select combination) must not reach the game
                     game_gate.arm();

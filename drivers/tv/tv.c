@@ -75,6 +75,8 @@ static TV_MODE v_mode = {
     .CLK_SPD = 31500000.0
 };
 
+volatile uint32_t graphics_frame_count = 0;
+
 static graphics_buffer_t graphics_buffer = {
     .data = NULL,
     .shift_x = 0,
@@ -447,6 +449,11 @@ static void __scratch_x("tv_main_loop") main_video_loopTV() {
                     if ((line_active > 271)) { y = line_active - 282; };
                     break;
             }
+
+            /* the buffer is latched at the first picture line, so one set
+             * after the end of the picture is shown whole from the next field */
+            if (y == 0) input_buffer = graphics_buffer.data;
+            if (y == 240) graphics_frame_count++;
 
             if (y >= 240 || y < 0 || input_buffer == NULL) {
                 //вне изображения

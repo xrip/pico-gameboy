@@ -923,16 +923,25 @@ uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 /**
  * Internal function used to write bytes.
  */
+/* front-end: a GBC palette entry (0..63, gb->cgb.fixPalette) has changed;
+ * it may happen in the middle of a frame (src/main.cpp) */
+void gb_cgb_palette_changed(uint8_t index);
+
 void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 {
 	switch(PEANUT_GB_GET_MSN16(addr))
 	{
 	case 0x0:
 	case 0x1:
-		/* Set RAM enable bit. MBC2 is handled in fall-through. */
-		if(gb->mbc > 0 && gb->mbc != 2 && gb->cart_ram)
+		/* Set RAM enable bit. MBC2 is handled in fall-through.
+		 * A cartridge without RAM still decodes 0000-1FFF as the RAM
+		 * enable register: such a write must not fall through into the
+		 * ROM bank select below (Antz Racing, MBC5 without RAM, writes
+		 * 0000 at start and was switched to a wrong bank). */
+		if(gb->mbc > 0 && gb->mbc != 2)
 		{
-			gb->enable_cart_ram = ((val & 0x0F) == 0x0A);
+			if(gb->cart_ram)
+				gb->enable_cart_ram = ((val & 0x0F) == 0x0A);
 			return;
 		}
 
@@ -1322,7 +1331,7 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3F)] = val;
 			fixPaletteTemp = (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E) + 1] << 8) + (gb->cgb.BGPalette[(gb->cgb.BGPaletteID & 0x3E)]);
 			gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)] = RGB555_TO_RGB888(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-			graphics_set_palette((gb->cgb.BGPaletteID & 0x3E) >> 1,gb->cgb.fixPalette[((gb->cgb.BGPaletteID & 0x3E) >> 1)]);
+			gb_cgb_palette_changed((gb->cgb.BGPaletteID & 0x3E) >> 1);
 			if(gb->cgb.BGPaletteInc) gb->cgb.BGPaletteID = (++gb->cgb.BGPaletteID) & 0x3F;
 			return;
 
@@ -1338,7 +1347,7 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			fixPaletteTemp = (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E) + 1] << 8) + (gb->cgb.OAMPalette[(gb->cgb.OAMPaletteID & 0x3E)]);
 
 			gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)] = RGB555_TO_RGB888(((fixPaletteTemp & 0x7C00) >> 10) | (fixPaletteTemp & 0x03E0) | ((fixPaletteTemp & 0x001F) << 10));  // swap Red and Blue
-			graphics_set_palette(0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1), gb->cgb.fixPalette[0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1)]);
+			gb_cgb_palette_changed(0x20 + ((gb->cgb.OAMPaletteID & 0x3E) >> 1));
 			if(gb->cgb.OAMPaletteInc) gb->cgb.OAMPaletteID = (++gb->cgb.OAMPaletteID) & 0x3F;
 			return;
 

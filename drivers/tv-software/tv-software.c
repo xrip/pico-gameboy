@@ -119,6 +119,9 @@ size_t getCols(void) {
     return cols_ntsc;
 }
 
+static volatile enum graphics_scale_t tv_scale = GRAPHICS_SCALE_2X;
+volatile uint32_t graphics_frame_count = 0;
+
 static G_BUFFER graphics_buffer = {
     .data = NULL,
     .shift_x = 0,
@@ -911,6 +914,11 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                     break;
             }
 
+            /* the buffer is latched at the first picture line, so one set
+             * after the end of the picture is shown whole from the next field */
+            if (y == 0) input_buffer = graphics_buffer.data;
+            if (y == 240) graphics_frame_count++;
+
             if ((y >= 240) || (y < 0) || (input_buffer == NULL)) {
                 //вне изображения
                 memset(output_buffer8, video_mode.LVL_BLACK_TMPL, video_mode.img_W);
@@ -1045,18 +1053,32 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                         }
                         break;
                         case GRAPHICSMODE_DEFAULT: {
-                            if (y < graphics_buffer.shift_y || y >= graphics_buffer.height+graphics_buffer.shift_y) {
+                            /* Picture size, as on HDMI/VGA: the image area is 240 lines per field.
+                             * 2x - one field line per buffer row (144 lines), 3x - 1.5 (216 lines,
+                             * rows of 2 and 1 lines in turn), Full - all 240 lines and the whole
+                             * active line (4:3). */
+                            const int h = graphics_buffer.height;
+                            const int out_rows = tv_scale == GRAPHICS_SCALE_2X ? h
+                                               : tv_scale == GRAPHICS_SCALE_3X ? h * 3 / 2 : 240;
+                            const int r = y - (240 - out_rows) / 2;
+                            if (r < 0 || r >= out_rows) {
                                 memset(output_buffer8, video_mode.LVL_BLACK_TMPL, video_mode.img_W);
                             } else {
                                 //для 8-битного буфера
-                                uint8_t* input_buffer8 = input_buffer + (y-graphics_buffer.shift_y) * graphics_buffer.width;
+                                uint8_t* input_buffer8 = input_buffer + (r * h / out_rows) * graphics_buffer.width;
 
                                 // The Game Boy LCD has square pixels.  A field shows ~288 (PAL) or ~240
-                                // (NTSC) active lines of a 4:3 picture, so a square pixel takes
+                                // (NTSC) active lines of a 4:3 picture, so in 2x a square pixel takes
                                 // img_W * 3 / (4 * lines) samples: 917 * 3 / 1152 = 2.39 (PAL) and
-                                // 741 * 3 / 960 = 2.32 (NTSC) samples of the 4*Fsc clock.
-                                const int di_gb = (tv_out_mode.c_freq == _4433619) ? 107 : 111;
-                                const int gb_samples = (graphics_buffer.width * 0x100 + di_gb - 1) / di_gb;
+                                // 741 * 3 / 960 = 2.32 (NTSC) samples of the 4*Fsc clock; 3x - 1.5
+                                // times more, Full - the whole active line.
+                                const int w = graphics_buffer.width;
+                                const int di_sq = (tv_out_mode.c_freq == _4433619) ? 107 : 111;
+                                int gb_samples = tv_scale == GRAPHICS_SCALE_2X ? (w * 0x100 + di_sq - 1) / di_sq
+                                               : tv_scale == GRAPHICS_SCALE_3X ? (w * 0x100 * 3 / 2 + di_sq - 1) / di_sq
+                                               : video_mode.img_W;
+                                if (gb_samples > video_mode.img_W) gb_samples = video_mode.img_W;
+                                const int di_gb = (w * 0x100 + gb_samples - 1) / gb_samples;
                                 int lead = ((video_mode.img_W - gb_samples) / 2) & ~3; // keep subcarrier phase
                                 if (lead < 0) lead = 0;
                                 int count = gb_samples;
@@ -1256,6 +1278,10 @@ void graphics_set_offset(const int x, const int y) {
     graphics_buffer.shift_x = x;
     graphics_buffer.shift_y = y;
 };
+
+void graphics_set_scale(enum graphics_scale_t scale) {
+    tv_scale = scale;
+}
 
 void clrScr(const uint8_t color) {
     if (text_buffer)

@@ -56,9 +56,14 @@ void graphics_set_mode(enum graphics_mode_t mode);
 
 void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
 
+/* HDMI / VGA / TV: counts the ends of the picture (once per field).  A buffer
+ * set right after it (before the vertical blank is over) is shown whole from
+ * the next field; the palette entries changed then apply to it alone. */
+extern volatile uint32_t graphics_frame_count;
+
 void graphics_set_offset(int x, int y);
 
-// HDMI / VGA, GRAPHICSMODE_DEFAULT: Game Boy picture scale on the 640x480 screen
+// HDMI / VGA / TV-SOFT, GRAPHICSMODE_DEFAULT: Game Boy picture scale on the screen
 enum graphics_scale_t {
     GRAPHICS_SCALE_2X,      // 2x2 physical pixels per buffer pixel
     GRAPHICS_SCALE_3X,      // 3x3 (HDMI: 3 lines, 4/2 pixels in turn - 2-pixel steps)

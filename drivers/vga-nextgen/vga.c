@@ -85,6 +85,7 @@ static uint16_t* txt_palette_fast = NULL;
 //static uint16_t txt_palette_fast[256*4];
 
 enum graphics_mode_t graphics_mode;
+volatile uint32_t graphics_frame_count = 0;
 
 
 void __time_critical_func() dma_handler_VGA() {
@@ -101,6 +102,8 @@ void __time_critical_func() dma_handler_VGA() {
     }
 
     if (screen_line >= N_lines_visible) {
+        // the vertical blank begins; the buffer is latched at line 0
+        if (screen_line == N_lines_visible) graphics_frame_count++;
         //заполнение цветом фона
         if (screen_line == N_lines_visible | screen_line == N_lines_visible + 3) {
             uint32_t* output_buffer_32bit = lines_pattern[2 + (screen_line & 1)];
