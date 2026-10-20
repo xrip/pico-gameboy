@@ -174,6 +174,8 @@ static palette_t palette16; // Colour palette
  * One selector above them sets all three; they are chosen one by one only
  * when it is CUSTOM. */
 enum palette_layer_e : uint8_t { LAYER_BG = 0, LAYER_OBJ0, LAYER_OBJ1, LAYER_COUNT };
+/* the core (LCD_PALETTE_ALL) and gbcolors.h number them OBJ0, OBJ1, BG */
+static const uint8_t layer_hw[LAYER_COUNT] = { 2, 0, 1 };
 static constexpr uint8_t PALETTE_AUTO = 0;                               // by the game (GBC boot ROM)
 static constexpr uint8_t PALETTE_MONO_FIRST = NUMBER_OF_MANUAL_PALETTES; // pico-gamate 4-colour palettes
 static constexpr uint8_t PALETTE_RANDOM = PALETTE_MONO_FIRST + MONO_PALETTES_NUMBER;
@@ -1416,8 +1418,11 @@ static void palette_apply() {
     for (int i = 0; i < LAYER_COUNT; i++)
         for (int j = 0; j < 4; j++) {
             const uint32_t c = pal_rgb[i][j];
-            graphics_set_palette(i * 4 + j, RGB888(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF));
-            palette[i][j] = i * 4 + j;
+            // RGB888() does not bracket its arguments: plain values only
+            const uint32_t r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+            const uint8_t slot = layer_hw[i] * 4 + j;
+            graphics_set_palette(slot, RGB888(r, g, b));
+            palette[layer_hw[i]][j] = slot;
         }
 }
 
@@ -1486,7 +1491,7 @@ static void update_palette() {
                 gbc_palette_ready = true;
                 gbc_palette_of = sel;
             }
-            for (int j = 0; j < 4; j++) out[j] = rgb565_to_rgb888(palette16[layer][j]);
+            for (int j = 0; j < 4; j++) out[j] = rgb565_to_rgb888(palette16[layer_hw[layer]][j]);
         }
         else if (sel < PALETTE_RANDOM) {
             const uint8_t* m = mono_palettes[sel - PALETTE_MONO_FIRST];
@@ -1662,7 +1667,7 @@ static uint8_t pe_contrast(const unsigned slot) {
         const unsigned distance = dr * dr + dg * dg + db * db;
         if (distance > best_distance) {
             best_distance = distance;
-            best = i;
+            best = layer_hw[i >> 2] * 4 + (i & 3); // the video palette slot
         }
     }
     return best;
@@ -1674,7 +1679,7 @@ static void pe_draw(uint8_t* buf, const unsigned selected, const int edit_channe
         const int x0 = (int)(slot & 3) * PE_W;
         const int y0 = (int)(slot >> 2) * PE_H;
         for (int y = y0; y < y0 + PE_H; y++)
-            memset(buf + y * LCD_WIDTH + x0, (int)slot, PE_W);
+            memset(buf + y * LCD_WIDTH + x0, layer_hw[slot >> 2] * 4 + (slot & 3), PE_W);
 
         const uint8_t text = pe_contrast(slot);
         char label[8];
