@@ -247,6 +247,14 @@ static volatile bool kbd_page_up = false;
 static volatile bool kbd_page_down = false;
 static volatile bool kbd_home = false;
 static volatile bool kbd_end = false;
+static volatile int8_t kbd_hex_key = -1;     // a hex digit just pressed (palette editor)
+static volatile bool kbd_hex_mode = false;   // the palette editor is open: A-F, W, S are digits
+static volatile int8_t palette_layer_cycle_requested = 0; // F1..F3 (+Shift): +-(layer + 1)
+static volatile bool palette_shuffle_requested = false;         // F7
+static volatile bool palette_shuffle_requested_no_save = false; // F6
+static volatile bool palette_save_requested = false;            // F8
+static volatile bool palette_default_requested = false;         // F9
+static volatile bool palette_editor_requested = false;          // F12
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -281,11 +289,6 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
             if (isInReport(report, hex_keys[h]) && !isInReport(prev_report, hex_keys[h]))
                 kbd_hex_key = h;
     }
-
-    kbd_page_up = isInReport(report, HID_KEY_PAGE_UP);
-    kbd_page_down = isInReport(report, HID_KEY_PAGE_DOWN);
-    kbd_home = isInReport(report, HID_KEY_HOME);
-    kbd_end = isInReport(report, HID_KEY_END);
 
     kbd_page_up = isInReport(report, HID_KEY_PAGE_UP);
     kbd_page_down = isInReport(report, HID_KEY_PAGE_DOWN);
@@ -940,6 +943,12 @@ bool filebrowser_loadfile(const char pathname[256]) {
     if (total_read != load_size)
         return fail("ERROR: ROM load failed!           ");
 
+    {
+        const char* name = pathname;
+        for (const char* q = pathname; *q; q++)
+            if (*q == '\\' || *q == '/') name = q + 1;
+        snprintf(rom_file, sizeof rom_file, "%s", name);
+    }
     if (use_psram) {
         rom_psram_size = load_size;
         rom_in_psram = 1;
@@ -956,6 +965,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 /* Where the browser was left: re-entering it opens the same directory with
  * the same entry under the cursor (e.g. the ROM that was just played). */
 static char fb_dir[256] = "\\GB";
+static bool fb_menu_requested = false; // START+SELECT in the browser
 static char fb_focus[80] = "";
 
 static void fb_remember(const char* dir, const char* name) {
@@ -967,7 +977,9 @@ static void fb_remember(const char* dir, const char* name) {
 
 /* Returns when a ROM is ready to run: a newly loaded one (START) or the
  * previous one (SELECT). */
-void filebrowser(const char executables[11]) {
+static bool gbbp_try_install(const char* pathname); // a .gbbp file: install it as the backplane
+
+void filebrowser(const char* executables) {
     input_gate_t gate;
     char basepath[256];
     char focus[80];
@@ -1073,8 +1085,10 @@ void filebrowser(const char executables[11]) {
 
             const uint8_t keys = gate.read();
 
-            // SELECT: run the previous cartridge
-            if (keys & BTN_SELECT) {
+            // SELECT: run the previous cartridge; START+SELECT: and open the menu (as in the game)
+            if ((keys & BTN_SELECT) ||
+                (keys & BTN_START && (input_held() & (BTN_START | BTN_SELECT)) == (BTN_START | BTN_SELECT))) {
+                fb_menu_requested = (input_held() & BTN_START) != 0;
                 fb_remember(basepath, fileItems[offset + current_item].filename);
                 rom = previous_rom();
                 return;
@@ -1171,8 +1185,14 @@ void filebrowser(const char executables[11]) {
 
                 if (file_at_cursor.is_executable) {
                     char fullpath[256];
-                    if (snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath, file_at_cursor.filename) <
-                        (int)sizeof fullpath && filebrowser_loadfile(fullpath)) {
+                    const bool path_ok = snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath,
+                                                  file_at_cursor.filename) < (int)sizeof fullpath;
+                    if (path_ok && gbbp_try_install(fullpath)) {
+                        // its message covered the list: redraw it, same entry
+                        strcpy(focus, file_at_cursor.filename);
+                        break;
+                    }
+                    if (path_ok && filebrowser_loadfile(fullpath)) {
                         fb_remember(basepath, file_at_cursor.filename);
                         return;
                     }
@@ -1369,10 +1389,100 @@ static uint8_t screen_scale = 1;
 #else
 static uint8_t screen_scale = 0;
 #endif
-#ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
-#define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
+/* HDMI / VGA / TV-SOFT on RP2350: the Game Boy Color picture around the game
+ * in 2x and 3x (the cells take 75 KB of RAM - no room on RP2040) */
+#if (VGA || HDMI || SOFTTV) && PICO_RP2350
+#define BACKPLANE 1
+static uint8_t backplane = 1;
+
+/* A backplane file (.gbbp) replaces the built-in one:
+ *   "GBBP", version (1 byte, GBBP_VERSION) - other versions are refused;
+ *   for HDMI / VGA (320 cells across), then for TV-SOFT (384 cells):
+ *     32 colours (R, G, B bytes), the 2x cells, the 3x cells (W x 240 colour
+ *     numbers 0..31 each, a row after row; the game window cells are unused).
+ * A TV-SOFT build reads its part after the HDMI / VGA one.  Installed from the
+ * file manager: copied to /.config/gbc/backplane.gbbp and shown from then on
+ * (delete that file for the built-in one). */
+#define GBBP_VERSION 1
+#define GBBP_FILE CONFIG_DIR "/backplane.gbbp"
+static constexpr uint32_t gbbp_part(const uint32_t w) { return BACKPLANE_LOADED_COLORS * 3 + 2 * w * 240; }
+static constexpr uint32_t GBBP_HEADER = 5;
+static constexpr uint32_t GBBP_SIZE = GBBP_HEADER + gbbp_part(320) + gbbp_part(384);
+
+static bool gbbp_header_ok(FIL* f) {
+    uint8_t h[GBBP_HEADER];
+    UINT br = 0;
+    return f_size(f) == GBBP_SIZE && f_lseek(f, 0) == FR_OK && f_read(f, h, sizeof h, &br) == FR_OK &&
+           br == sizeof h && !memcmp(h, "GBBP", 4) && h[4] == GBBP_VERSION;
+}
+
+/* the installed backplane, the part of this build, the cells of the scale */
+static bool gbbp_load(const enum graphics_scale_t scale) {
+    static FIL f; // static: core 0 has a small stack
+    if (f_open(&f, GBBP_FILE, FA_READ) != FR_OK) return false;
+    bool ok = gbbp_header_ok(&f);
+    static uint8_t rgb[BACKPLANE_LOADED_COLORS * 3];
+    const uint32_t part = GBBP_HEADER + (BACKPLANE_W == 384 ? gbbp_part(320) : 0);
+    const UINT cells_size = BACKPLANE_W * BACKPLANE_H;
+    UINT br = 0;
+    ok = ok && f_lseek(&f, part) == FR_OK && f_read(&f, rgb, sizeof rgb, &br) == FR_OK && br == sizeof rgb;
+    uint8_t* const buffer = ok ? backplane_buffer() : nullptr;
+    ok = buffer && f_lseek(&f, part + sizeof rgb + (scale == GRAPHICS_SCALE_3X ? cells_size : 0)) == FR_OK &&
+         f_read(&f, buffer, cells_size, &br) == FR_OK && br == cells_size;
+    f_close(&f);
+    if (ok) backplane_show_loaded(rgb);
+    return ok; // otherwise the built-in one is unpacked again
+}
+
+static void apply_backplane() {
+    const auto scale = (enum graphics_scale_t)screen_scale;
+    if (backplane && scale != GRAPHICS_SCALE_STRETCH && gbbp_load(scale)) return;
+    graphics_set_backplane(backplane, scale);
+}
+
+static bool gbbp_try_install(const char* pathname) {
+    const char* dot = strrchr(pathname, '.');
+    if (!dot || strcasecmp(dot, ".gbbp") != 0) return false;
+
+    const int window_w = (int)TEXTMODE_COLS < 43 ? (int)TEXTMODE_COLS : 43;
+    const int window_y = (TEXTMODE_ROWS - 5) / 2;
+    const int window_x = ((int)TEXTMODE_COLS - window_w) / 2;
+    draw_window("Backplan", window_x, window_y, window_w, 5);
+
+    static FIL src, dst; // static: core 0 has a small stack
+    const char* message = "This backplan version is unsupported";
+    bool installed = false;
+    if (f_open(&src, pathname, FA_READ) == FR_OK) {
+        if (gbbp_header_ok(&src)) {
+            message = "ERROR: can't write the backplan";
+            config_mkdirs();
+            if (f_lseek(&src, 0) == FR_OK && f_open(&dst, GBBP_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+                static uint8_t chunk[4096];
+                bool ok = true;
+                for (UINT br = 1; ok && br;) {
+                    UINT bw = 0;
+                    ok = f_read(&src, chunk, sizeof chunk, &br) == FR_OK &&
+                         f_write(&dst, chunk, br, &bw) == FR_OK && bw == br;
+                }
+                ok = f_close(&dst) == FR_OK && ok;
+                if (ok) {
+                    message = "Backplan is installed";
+                    installed = true;
+                }
+                else {
+                    f_unlink(GBBP_FILE);
+                }
+            }
+        }
+        f_close(&src);
+    }
+    if (installed) apply_backplane();
+    draw_text(message, window_x + 1, window_y + 2, installed ? 10 : 13, 1);
+    sleep_ms(2000);
+    return true;
+}
 #else
-#define TEXT_BUFFER_COLS TEXTMODE_COLS
+static bool gbbp_try_install(const char*) { return false; }
 #endif
 #ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
 #define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
@@ -2123,6 +2233,9 @@ const MenuItem menu_items[] = {
 #if VGA || HDMI || SOFTTV
     { "" },
     { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
+#if BACKPLANE
+    { "Backplane: %s", ARRAY, &backplane, nullptr, 1, { "OFF", "ON " } },
+#endif
 #endif
     {},
 {
@@ -2176,9 +2289,8 @@ static void f_load_conf(void) {
         UINT br;
         uint8_t v = 0;
         f_read(&f, &swap_ab, 1, &br);
-        f_read(&f, &manual_palette_selected, 1, &br);
-        // the same layout for all builds; older configs end earlier
-        uint8_t v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v < PALETTE_MONO_FIRST)
+            palette_all = v;
         if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= 1) tv_system = v;
         if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= GRAPHICS_SCALE_STRETCH) screen_scale = v;
         f_close(&f);
@@ -2187,14 +2299,26 @@ static void f_load_conf(void) {
 }
 
 static void f_save_conf(void) {
-    f_mkdir("/GB"); // ничего не делает, если она уже есть
-    FIL f;
-    f_open(&f, "/GB/gb.conf", FA_CREATE_ALWAYS | FA_WRITE);
-    UINT br;
-    f_write(&f, &swap_ab, 1, &br);
-    f_write(&f, &manual_palette_selected, 1, &br);
-    f_write(&f, &tv_system, 1, &br);
-    f_write(&f, &screen_scale, 1, &br);
+    char pathname[96];
+    config_mkdirs();
+    config_path(pathname, sizeof pathname);
+    static char text[512];
+    int len = snprintf(text, sizeof text, "swap_ab=%u\r\ntv_system=%u\r\nscreen=%u\r\npalette_all=%u\r\n",
+                       (unsigned)swap_ab, (unsigned)tv_system, (unsigned)screen_scale, (unsigned)palette_all);
+    for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof text; i++)
+        len += snprintf(text + len, sizeof text - len, "palette%u=%u\r\ncustom%u=%06lX,%06lX,%06lX,%06lX\r\n",
+                        i, (unsigned)palette_index[i], i,
+                        (unsigned long)custom_rgb[i][0], (unsigned long)custom_rgb[i][1],
+                        (unsigned long)custom_rgb[i][2], (unsigned long)custom_rgb[i][3]);
+#if BACKPLANE
+    if (len > 0 && len < (int)sizeof text)
+        len += snprintf(text + len, sizeof text - len, "backplane=%u\r\n", (unsigned)backplane);
+#endif
+    if (len <= 0 || len >= (int)sizeof text) return;
+    static FIL f; // static: core 0 has a small stack
+    if (f_open(&f, pathname, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
+    UINT bw;
+    f_write(&f, text, (UINT)len, &bw);
     f_close(&f);
 }
 
@@ -2233,6 +2357,7 @@ void menu() {
         const uint8_t pressed = held_keys & (uint8_t)~prev_keys;
         prev_keys = held_keys;
         const bool activate = pressed & BTN_START;
+        const bool dmg = !gb.cgb.cgbMode; // the colours are for Game Boy games
 
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
             uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
@@ -2250,6 +2375,7 @@ void menu() {
                     case ARRAY:
                         if (item->max_value != 0) {
                             auto* value = (uint8_t *)item->value;
+                            const uint8_t old = *value;
                             if ((pressed & BTN_RIGHT) && *value < item->max_value) {
                                 (*value)++;
                             }
@@ -2330,39 +2456,29 @@ void menu() {
         }
 
         if (pressed & BTN_DOWN) {
-            current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
-
-            if (menu_items[current_item].type == NONE)
-                current_item++;
+            do {
+                current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
+            } while (!menu_item_selectable(current_item));
         }
         if (pressed & BTN_UP) {
-            current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
-
-            if (menu_items[current_item].type == NONE)
-                current_item--;
+            do {
+                current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
+            } while (!menu_item_selectable(current_item));
         }
 
         sleep_ms(25);
     }
-    if (manual_palette_selected > 0) {
-        manual_assign_palette(palette16, manual_palette_selected);
-    } else {
-        char rom_title[16];
-        auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
-    }
-    // a Game Boy Color game keeps its own palette in slots 0..63
-    if (!gb.cgb.cgbMode)
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-                palette[i][j] = i * 4 + j;
-            }
+    palette_hotkeys_clear();
+    palette_apply();
     f_save_conf();
 #if SOFTTV
     graphics_set_tv(tv_system == 0, true); // applied by graphics_set_mode()
 #endif
 #if VGA || HDMI || SOFTTV
     graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
+#if BACKPLANE
+    apply_backplane();
 #endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
@@ -2418,13 +2534,20 @@ int main() {
 #if VGA || HDMI || SOFTTV
         graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
+#if BACKPLANE
+        apply_backplane();
+#endif
     }
 
     while (true) {
         /* ROM File selector */
         if (FR_OK == fr) {
             graphics_set_mode(TEXTMODE_DEFAULT);
+#if BACKPLANE
+            filebrowser("gbc,gb,gbbp"); // .gbbp: a backplane to install
+#else
             filebrowser("gbc,gb");
+#endif
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 
@@ -2447,6 +2570,11 @@ int main() {
 
         // the Enter/Start that launched the ROM must not reach the game
         input_gate_t game_gate;
+        if (fb_menu_requested) {
+            fb_menu_requested = false;
+            menu();
+            cgb_palette_reset(); // the menu may have changed the video palette
+        }
         game_gate.arm();
 
         //=============================================================================
