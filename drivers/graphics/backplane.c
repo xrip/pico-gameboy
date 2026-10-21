@@ -26,6 +26,25 @@ static void unpack(const uint8_t* rle, const size_t size) {
     }
 }
 
+/* a backplane loaded from a file: the cells buffer (BACKPLANE_W x BACKPLANE_H)
+ * to read colour numbers 0..31 into; not shown meanwhile.  NULL - no room. */
+uint8_t* backplane_buffer(void) {
+    backplane_cells = NULL;
+    if (!cells) cells = (uint8_t *)malloc(BACKPLANE_W * BACKPLANE_H);
+    unpacked = -1; // the built-in cells are gone
+    return cells;
+}
+
+/* show the buffer filled after backplane_buffer() with its 32 colours (R, G, B) */
+void backplane_show_loaded(const uint8_t rgb[BACKPLANE_COLORS * 3]) {
+    if (!cells) return;
+    for (int i = 0; i < BACKPLANE_W * BACKPLANE_H; i++)
+        cells[i] = backplane_slot[cells[i] % BACKPLANE_COLORS];
+    for (int i = 0; i < BACKPLANE_COLORS; i++)
+        graphics_set_palette(backplane_slot[i], (uint32_t)rgb[i * 3] << 16 | rgb[i * 3 + 1] << 8 | rgb[i * 3 + 2]);
+    backplane_cells = cells;
+}
+
 void graphics_set_backplane(const bool on, const enum graphics_scale_t scale) {
     backplane_cells = NULL; // the video driver stops showing them first
     if (!on || scale == GRAPHICS_SCALE_STRETCH) return;

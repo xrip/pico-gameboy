@@ -24,6 +24,7 @@
 /* C Headers */
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 /* RP2040 Headers */
 #include "pico/runtime.h"
@@ -976,7 +977,9 @@ static void fb_remember(const char* dir, const char* name) {
 
 /* Returns when a ROM is ready to run: a newly loaded one (START) or the
  * previous one (SELECT). */
-void filebrowser(const char executables[11]) {
+static bool gbbp_try_install(const char* pathname); // a .gbbp file: install it as the backplane
+
+void filebrowser(const char* executables) {
     input_gate_t gate;
     char basepath[256];
     char focus[80];
@@ -1182,8 +1185,14 @@ void filebrowser(const char executables[11]) {
 
                 if (file_at_cursor.is_executable) {
                     char fullpath[256];
-                    if (snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath, file_at_cursor.filename) <
-                        (int)sizeof fullpath && filebrowser_loadfile(fullpath)) {
+                    const bool path_ok = snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath,
+                                                  file_at_cursor.filename) < (int)sizeof fullpath;
+                    if (path_ok && gbbp_try_install(fullpath)) {
+                        // its message covered the list: redraw it, same entry
+                        strcpy(focus, file_at_cursor.filename);
+                        break;
+                    }
+                    if (path_ok && filebrowser_loadfile(fullpath)) {
                         fb_remember(basepath, file_at_cursor.filename);
                         return;
                     }
@@ -1385,6 +1394,95 @@ static uint8_t screen_scale = 0;
 #if (VGA || HDMI || SOFTTV) && PICO_RP2350
 #define BACKPLANE 1
 static uint8_t backplane = 1;
+
+/* A backplane file (.gbbp) replaces the built-in one:
+ *   "GBBP", version (1 byte, GBBP_VERSION) - other versions are refused;
+ *   for HDMI / VGA (320 cells across), then for TV-SOFT (384 cells):
+ *     32 colours (R, G, B bytes), the 2x cells, the 3x cells (W x 240 colour
+ *     numbers 0..31 each, a row after row; the game window cells are unused).
+ * A TV-SOFT build reads its part after the HDMI / VGA one.  Installed from the
+ * file manager: copied to /.config/gbc/backplane.gbbp and shown from then on
+ * (delete that file for the built-in one). */
+#define GBBP_VERSION 1
+#define GBBP_FILE CONFIG_DIR "/backplane.gbbp"
+static constexpr uint32_t gbbp_part(const uint32_t w) { return BACKPLANE_LOADED_COLORS * 3 + 2 * w * 240; }
+static constexpr uint32_t GBBP_HEADER = 5;
+static constexpr uint32_t GBBP_SIZE = GBBP_HEADER + gbbp_part(320) + gbbp_part(384);
+
+static bool gbbp_header_ok(FIL* f) {
+    uint8_t h[GBBP_HEADER];
+    UINT br = 0;
+    return f_size(f) == GBBP_SIZE && f_lseek(f, 0) == FR_OK && f_read(f, h, sizeof h, &br) == FR_OK &&
+           br == sizeof h && !memcmp(h, "GBBP", 4) && h[4] == GBBP_VERSION;
+}
+
+/* the installed backplane, the part of this build, the cells of the scale */
+static bool gbbp_load(const enum graphics_scale_t scale) {
+    static FIL f; // static: core 0 has a small stack
+    if (f_open(&f, GBBP_FILE, FA_READ) != FR_OK) return false;
+    bool ok = gbbp_header_ok(&f);
+    static uint8_t rgb[BACKPLANE_LOADED_COLORS * 3];
+    const uint32_t part = GBBP_HEADER + (BACKPLANE_W == 384 ? gbbp_part(320) : 0);
+    const UINT cells_size = BACKPLANE_W * BACKPLANE_H;
+    UINT br = 0;
+    ok = ok && f_lseek(&f, part) == FR_OK && f_read(&f, rgb, sizeof rgb, &br) == FR_OK && br == sizeof rgb;
+    uint8_t* const buffer = ok ? backplane_buffer() : nullptr;
+    ok = buffer && f_lseek(&f, part + sizeof rgb + (scale == GRAPHICS_SCALE_3X ? cells_size : 0)) == FR_OK &&
+         f_read(&f, buffer, cells_size, &br) == FR_OK && br == cells_size;
+    f_close(&f);
+    if (ok) backplane_show_loaded(rgb);
+    return ok; // otherwise the built-in one is unpacked again
+}
+
+static void apply_backplane() {
+    const auto scale = (enum graphics_scale_t)screen_scale;
+    if (backplane && scale != GRAPHICS_SCALE_STRETCH && gbbp_load(scale)) return;
+    graphics_set_backplane(backplane, scale);
+}
+
+static bool gbbp_try_install(const char* pathname) {
+    const char* dot = strrchr(pathname, '.');
+    if (!dot || strcasecmp(dot, ".gbbp") != 0) return false;
+
+    const int window_w = (int)TEXTMODE_COLS < 43 ? (int)TEXTMODE_COLS : 43;
+    const int window_y = (TEXTMODE_ROWS - 5) / 2;
+    const int window_x = ((int)TEXTMODE_COLS - window_w) / 2;
+    draw_window("Backplan", window_x, window_y, window_w, 5);
+
+    static FIL src, dst; // static: core 0 has a small stack
+    const char* message = "This backplan version is unsupported";
+    bool installed = false;
+    if (f_open(&src, pathname, FA_READ) == FR_OK) {
+        if (gbbp_header_ok(&src)) {
+            message = "ERROR: can't write the backplan";
+            config_mkdirs();
+            if (f_lseek(&src, 0) == FR_OK && f_open(&dst, GBBP_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+                static uint8_t chunk[4096];
+                bool ok = true;
+                for (UINT br = 1; ok && br;) {
+                    UINT bw = 0;
+                    ok = f_read(&src, chunk, sizeof chunk, &br) == FR_OK &&
+                         f_write(&dst, chunk, br, &bw) == FR_OK && bw == br;
+                }
+                ok = f_close(&dst) == FR_OK && ok;
+                if (ok) {
+                    message = "Backplan is installed";
+                    installed = true;
+                }
+                else {
+                    f_unlink(GBBP_FILE);
+                }
+            }
+        }
+        f_close(&src);
+    }
+    if (installed) apply_backplane();
+    draw_text(message, window_x + 1, window_y + 2, installed ? 10 : 13, 1);
+    sleep_ms(2000);
+    return true;
+}
+#else
+static bool gbbp_try_install(const char*) { return false; }
 #endif
 #ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
 #define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
@@ -2380,7 +2478,7 @@ void menu() {
     graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
 #if BACKPLANE
-    graphics_set_backplane(backplane, (enum graphics_scale_t)screen_scale);
+    apply_backplane();
 #endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
@@ -2437,7 +2535,7 @@ int main() {
         graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
 #if BACKPLANE
-        graphics_set_backplane(backplane, (enum graphics_scale_t)screen_scale);
+        apply_backplane();
 #endif
     }
 
@@ -2445,7 +2543,11 @@ int main() {
         /* ROM File selector */
         if (FR_OK == fr) {
             graphics_set_mode(TEXTMODE_DEFAULT);
+#if BACKPLANE
+            filebrowser("gbc,gb,gbbp"); // .gbbp: a backplane to install
+#else
             filebrowser("gbc,gb");
+#endif
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 

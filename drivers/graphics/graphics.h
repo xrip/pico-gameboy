@@ -83,7 +83,11 @@ void graphics_set_scale(enum graphics_scale_t scale);
 #endif
 #define BACKPLANE_H 240
 extern uint8_t* volatile backplane_cells;
-void graphics_set_backplane(bool on, enum graphics_scale_t scale);
+void graphics_set_backplane(bool on, enum graphics_scale_t scale); // the built-in one
+/* a loaded one: fill backplane_buffer() with colour numbers 0..31, then show it */
+#define BACKPLANE_LOADED_COLORS 32
+uint8_t* backplane_buffer(void);
+void backplane_show_loaded(const uint8_t rgb[BACKPLANE_LOADED_COLORS * 3]);
 
 void graphics_set_palette(uint8_t i, uint32_t color);
 
