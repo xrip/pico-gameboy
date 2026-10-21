@@ -1,0 +1,2 @@
+# backplane files are binary: never convert their line ends
+*.gbbp binary
