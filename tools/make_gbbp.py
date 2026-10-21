@@ -14,10 +14,14 @@ The backplane is made of cells: a cell is 2x2 pixels of the 640x480 screen
              show the picture at the same position on the screen.
 
 Each of them has the 2x and the 3x variant (the game window in the middle:
-160x144 or 240x216 cells); by default both are cut the same way, the 3x one
-can get its own scale and shift (--scale-x3 ...).  The shift is counted in
-the scaled picture (after --scale-x/--scale-y), so it means the same cells
-for TV-SOFT and HDMI/VGA.
+160x144 or 240x216 cells).  --scale-x/-y and --shift-x/-y set the 2x one; the
+3x one is computed from them: the game window is 1.5 times bigger, so the
+picture is scaled 1.5 times more around the window centre (cell 192, 120 of
+the TV-SOFT part) - what was under the 2x window lies under the 3x one.
+--scale-x3/-y3, --shift-x3/-y3 only override the computed values (it is
+printed what was computed and what is applied).  The shift is counted in the
+scaled picture (after the scale), so it means the same cells for TV-SOFT and
+HDMI/VGA.
 
 32 colours per part (k-means), every cell the nearest of them; --dither
 spreads the error (Floyd-Steinberg) instead.  What lies outside the picture
@@ -30,7 +34,7 @@ File format (version 1, 338117 bytes):
 
 Examples:
     make_gbbp.py picture.png
-    make_gbbp.py picture.png --scale-x 0.5128 --scale-y 0.5393 --shift-x 39.3 --shift-y 56.8 --preview p.png
+    make_gbbp.py green.png --scale-x 0.51282 --scale-y 0.53933 --shift-x 39.282 --shift-y 60.404 --preview p.png
 """
 
 import argparse
@@ -486,10 +490,10 @@ def main():
     ap.add_argument('--scale-y', type=float, default=1.0, help='cells per picture pixel down (default 1)')
     ap.add_argument('--shift-x', type=float, default=0.0, help='TV-SOFT left edge in the scaled picture (default 0)')
     ap.add_argument('--shift-y', type=float, default=0.0, help='top edge in the scaled picture (default 0)')
-    ap.add_argument('--scale-x3', type=float, help='3x: its own scale across (default: --scale-x)')
-    ap.add_argument('--scale-y3', type=float, help='3x: its own scale down (default: --scale-y)')
-    ap.add_argument('--shift-x3', type=float, help='3x: its own shift across (default: --shift-x)')
-    ap.add_argument('--shift-y3', type=float, help='3x: its own shift down (default: --shift-y)')
+    ap.add_argument('--scale-x3', type=float, help='3x: override the computed scale across (1.5 x --scale-x)')
+    ap.add_argument('--scale-y3', type=float, help='3x: override the computed scale down (1.5 x --scale-y)')
+    ap.add_argument('--shift-x3', type=float, help='3x: override the computed shift across')
+    ap.add_argument('--shift-y3', type=float, help='3x: override the computed shift down')
     ap.add_argument('--dither', action='store_true', help='Floyd-Steinberg dithering (default: the nearest colour)')
     ap.add_argument('--fill', default='000000', help='RRGGBB outside the picture and under its transparency')
     ap.add_argument('--preview', help='a PNG with the four backplanes (the game window grey)')
@@ -498,10 +502,28 @@ def main():
     fill = tuple(int(a.fill[i:i + 2], 16) for i in (0, 2, 4))
     picture = load_picture(a.picture)
     print('%s: %dx%d' % (a.picture, picture[0], picture[1]))
+    # 3x from 2x: 1.5 times the scale, the picture point under the window
+    # centre (TV-SOFT cell 192, 120) stays there
+    k3 = 240 / 160
+    cx, cy = 384 / 2, ROWS / 2
+    computed = {
+        'scale-x3': a.scale_x * k3,
+        'scale-y3': a.scale_y * k3,
+        'shift-x3': (a.shift_x + cx) * k3 - cx,
+        'shift-y3': (a.shift_y + cy) * k3 - cy,
+    }
+    given = {'scale-x3': a.scale_x3, 'scale-y3': a.scale_y3, 'shift-x3': a.shift_x3, 'shift-y3': a.shift_y3}
+    applied = {}
+    for name, value in computed.items():
+        if given[name] is None:
+            applied[name] = value
+            print('3x %s: %.5g' % (name, value))
+        else:
+            applied[name] = given[name]
+            print('3x %s: computed %.5g, override %.5g applied' % (name, value, given[name]))
     geometry = {
         2: (a.scale_x, a.scale_y, a.shift_x, a.shift_y),
-        3: (a.scale_x3 or a.scale_x, a.scale_y3 or a.scale_y,
-            a.shift_x if a.shift_x3 is None else a.shift_x3, a.shift_y if a.shift_y3 is None else a.shift_y3),
+        3: (applied['scale-x3'], applied['scale-y3'], applied['shift-x3'], applied['shift-y3']),
     }
     body = b'GBBP' + bytes([GBBP_VERSION])
     preview = []
