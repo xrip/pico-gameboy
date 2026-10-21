@@ -171,7 +171,54 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
 }
 
 
-static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
+/* 3x / stretched picture: the buffer row of every screen line, -1 - none */
+static int16_t line_row[480];
+static int line_row_h = -1, line_row_scale = -1;
+static int stretch_k = 2; // stretch: whole samples per pixel
+
+static void line_rows_update(void) {
+    const int h = graphics_buffer_height;
+    if (graphics_buffer_width > 0) stretch_k = SCREEN_WIDTH / graphics_buffer_width;
+    if (h == line_row_h && (int)graphics_scale == line_row_scale) return;
+    const int top = (480 - 3 * h) / 2;
+    for (int t = 0; t < 480; t++) {
+        const int r = t - top;
+        line_row[t] = graphics_scale == GRAPHICS_SCALE_3X ? (r < 0 || r >= 3 * h ? -1 : r / 3)
+                                                          : (int16_t)(t * h / 480);
+    }
+    line_row_h = h;
+    line_row_scale = (int)graphics_scale;
+}
+
+/* The scanline IRQ must not call into the flash (memset / memcpy live there):
+ * a flash fetch competing with the emulator (and the PSRAM on the same QMI)
+ * delays the line.  volatile keeps the compiler from turning the loops back
+ * into library calls. */
+static inline __attribute__((always_inline)) void irq_fill(uint8_t* dst, const uint8_t value, int count) {
+    if ((((uintptr_t)dst | (uintptr_t)count) & 3) == 0) {
+        volatile uint32_t* d = (volatile uint32_t *)dst;
+        const uint32_t v = value * 0x01010101u;
+        for (count >>= 2; count > 0; count--) *d++ = v;
+        return;
+    }
+    volatile uint8_t* d = dst;
+    while (count-- > 0) *d++ = value;
+}
+
+static inline __attribute__((always_inline)) void irq_copy(uint8_t* dst, const uint8_t* src, int count) {
+    if ((((uintptr_t)dst | (uintptr_t)src | (uintptr_t)count) & 3) == 0) {
+        volatile uint32_t* d = (volatile uint32_t *)dst;
+        const uint32_t* s = (const uint32_t *)src;
+        for (count >>= 2; count > 0; count--) *d++ = *s++;
+        return;
+    }
+    volatile uint8_t* d = dst;
+    while (count-- > 0) *d++ = *src++;
+}
+
+/* in RAM, not in SCRATCH_Y: SCRATCH_Y is the stack of core 0, and code there
+ * leaves the stack too little room (it grew into this handler) */
+static void __not_in_flash_func(dma_handler_HDMI)() {
     static uint32_t inx_buf_dma;
     static uint line = 0;
     irq_inx++;
@@ -192,20 +239,11 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
     int scaled_row = -1;
     if (per_line) {
         const int target = line + 1;
-        const int h = graphics_buffer_height;
-        int prev_row;
-        if (graphics_scale == GRAPHICS_SCALE_3X) {
-            const int top = (480 - 3 * h) / 2;
-            scaled_row = target - top;
-            prev_row = scaled_row - 1;
-            scaled_row = scaled_row < 0 || scaled_row >= 3 * h ? -1 : scaled_row / 3;
-            prev_row = prev_row < 0 || prev_row >= 3 * h ? -1 : prev_row / 3;
-        } else {
-            scaled_row = target * h / 480;
-            prev_row = (target - 1) * h / 480;
-        }
+        scaled_row = line_row[target]; // no division here: RP2040 divides in the flash
+        const int prev_row = line_row[target - 1];
         // line 0 always draws: the buffer before it is a blanking line
-        if (line > 0 && scaled_row == prev_row) return;
+        // (the backplane changes on every second line)
+        if (line > 0 && scaled_row == prev_row && (!backplane_cells || (target & 1))) return;
     } else if ((line & 1) == 0) return;
 
     inx_buf_dma++;
@@ -218,15 +256,19 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
 
         if (per_line) {
+            // the backplane cell row of the line the buffer is shown on
+            const uint8_t* bp = backplane_cells ? backplane_cells + ((line + 1) >> 1) * BACKPLANE_W : NULL;
             if (scaled_row < 0) {
-                memset(output_buffer, 255, SCREEN_WIDTH);
+                if (bp) irq_copy(output_buffer, bp, SCREEN_WIDTH);
+                else irq_fill(output_buffer, 255, SCREEN_WIDTH);
             } else {
                 const uint8_t* src = &graphics_buffer[scaled_row * graphics_buffer_width];
                 const int w = graphics_buffer_width;
                 // 3x: 1.5 output samples per pixel (each sample is 2 physical pixels)
                 const int out_w = graphics_scale == GRAPHICS_SCALE_3X ? w * 3 / 2 : SCREEN_WIDTH;
                 const int left = (SCREEN_WIDTH - out_w) / 2;
-                memset(output_buffer, 255, left);
+                if (bp) irq_copy(output_buffer, bp, left);
+                else irq_fill(output_buffer, 255, left);
                 uint8_t* out = output_buffer + left;
                 if (graphics_scale == GRAPHICS_SCALE_3X) {
                     for (int x = 0; x + 1 < w; x += 2) {
@@ -238,37 +280,60 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                         *out++ = b;
                     }
                 } else {
-                    const int k = SCREEN_WIDTH / w; // stretch: whole samples per pixel
+                    const int k = stretch_k;
                     for (int x = 0; x < w; x++) {
                         uint8_t c = src[x];
                         c = ((c & 0xf0) == 0xf0) ? 255 : c;
-                        for (int i = k; i--;) *out++ = c;
+                        irq_fill(out, c, k);
+                        out += k;
                     }
                 }
-                memset(out, 255, output_buffer + SCREEN_WIDTH - out);
+                if (bp) irq_copy(out, bp + (out - output_buffer), output_buffer + SCREEN_WIDTH - out);
+                else irq_fill(out, 255, output_buffer + SCREEN_WIDTH - out);
             }
         } else
         switch (graphics_mode) {
             case GRAPHICSMODE_DEFAULT:
             case VGA_320x240x256: {
                 int y = line / 2;
+                const uint8_t* bp = backplane_cells && graphics_mode == GRAPHICSMODE_DEFAULT
+                                        ? backplane_cells + y * BACKPLANE_W : NULL;
+                if (bp) {
+                    // 2x with the backplane: the picture at its usual place
+                    const int r = y - graphics_buffer_shift_y;
+                    const int x0 = graphics_buffer_shift_x, w = graphics_buffer_width;
+                    if (r < 0 || r >= graphics_buffer_height || x0 < 0 || x0 + w > SCREEN_WIDTH) {
+                        irq_copy(output_buffer, bp, SCREEN_WIDTH);
+                        break;
+                    }
+                    irq_copy(output_buffer, bp, x0);
+                    const uint8_t* src = &graphics_buffer[r * w];
+                    uint8_t* out = output_buffer + x0;
+                    for (int x = 0; x < w; x++) {
+                        const uint8_t c = src[x];
+                        *out++ = ((c & 0xf0) == 0xf0) ? 255 : c;
+                    }
+                    irq_copy(out, bp + x0 + w, SCREEN_WIDTH - x0 - w);
+                    break;
+                }
                 // uint8_t* input_buffer = &graphics_buffer[(line / 3) * graphics_buffer_width];
                 //заполняем пространство сверху и снизу графического буфера
                 if (y < graphics_buffer_shift_y) {
-                    memset(output_buffer, 255, SCREEN_WIDTH);
+                    irq_fill(output_buffer, 255, SCREEN_WIDTH);
                     break;
                 }
                 if (false || (graphics_buffer_shift_y > y) || (y >= (graphics_buffer_shift_y + graphics_buffer_height))
                     || (graphics_buffer_shift_x >= SCREEN_WIDTH) || (
                         (graphics_buffer_shift_x + graphics_buffer_width) < 0)) {
-                    memset(output_buffer, 255,SCREEN_WIDTH);
+                    irq_fill(output_buffer, 255,SCREEN_WIDTH);
                     break;
                         }
 
                 uint8_t* activ_buf_end = output_buffer + SCREEN_WIDTH;
                 //рисуем пространство слева от буфера
-                for (int i = graphics_buffer_shift_x; i-- > 0;) {
-                    *output_buffer++ = 255;
+                if (graphics_buffer_shift_x > 0) {
+                    irq_fill(output_buffer, 255, graphics_buffer_shift_x);
+                    output_buffer += graphics_buffer_shift_x;
                 }
 
                 //рисуем сам видеобуфер+пространство справа
@@ -322,23 +387,23 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         }
 
 
-        // memset(activ_buf,2,320);//test
+        // irq_fill(activ_buf,2,320);//test
 
         //ССИ
         //для выравнивания синхры
 
         // --|_|---|_|---|_|----
         //---|___________|-----
-        memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
-        memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
-        memset(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
+        irq_fill(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
+        irq_fill(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+        irq_fill(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
 
         //без выравнивания
         // --|_|---|_|---|_|----
         //------|___________|----
-        //   memset(activ_buf+320,BASE_HDMI_CTRL_INX,8);
-        //   memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
-        //   memset(activ_buf+376,BASE_HDMI_CTRL_INX,24);
+        //   irq_fill(activ_buf+320,BASE_HDMI_CTRL_INX,8);
+        //   irq_fill(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
+        //   irq_fill(activ_buf+376,BASE_HDMI_CTRL_INX,24);
     }
     else {
         if ((line >= 490) && (line < 492)) {
@@ -346,26 +411,26 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             //для выравнивания синхры
             // --|_|---|_|---|_|----
             //---|___________|-----
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
+            irq_fill(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
+            irq_fill(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
             //без выравнивания
             // --|_|---|_|---|_|----
             //-------|___________|----
 
-            // memset(activ_buf,BASE_HDMI_CTRL_INX+2,328);
-            // memset(activ_buf+328,BASE_HDMI_CTRL_INX+3,48);
-            // memset(activ_buf+376,BASE_HDMI_CTRL_INX+2,24);
+            // irq_fill(activ_buf,BASE_HDMI_CTRL_INX+2,328);
+            // irq_fill(activ_buf+328,BASE_HDMI_CTRL_INX+3,48);
+            // irq_fill(activ_buf+376,BASE_HDMI_CTRL_INX+2,24);
         }
         else {
             //ССИ без изображения
             //для выравнивания синхры
 
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+            irq_fill(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
+            irq_fill(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
 
-            // memset(activ_buf,BASE_HDMI_CTRL_INX,328);
-            // memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
-            // memset(activ_buf+376,BASE_HDMI_CTRL_INX,24);
+            // irq_fill(activ_buf,BASE_HDMI_CTRL_INX,328);
+            // irq_fill(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
+            // irq_fill(activ_buf+376,BASE_HDMI_CTRL_INX,24);
         };
     }
 
@@ -631,6 +696,7 @@ void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height) {
     graphics_buffer = buffer;
     graphics_buffer_width = width;
     graphics_buffer_height = height;
+    line_rows_update();
 };
 
 
@@ -685,6 +751,7 @@ void graphics_set_offset(int x, int y) {
 
 void graphics_set_scale(enum graphics_scale_t scale) {
     graphics_scale = scale;
+    line_rows_update();
 }
 
 void graphics_set_textbuffer(uint8_t* buffer) {

@@ -120,6 +120,36 @@ size_t getCols(void) {
 }
 
 static volatile enum graphics_scale_t tv_scale = GRAPHICS_SCALE_2X;
+
+/* Backplane: the cell column of every sample of the active line, for the
+ * game picture of gb_samples samples from lead, gw cells from cell gx. */
+static uint16_t bp_col[1024];
+static int bp_col_key = -1;
+
+static void __not_in_flash_func(bp_prepare_columns)(const int img_W, const int lead, const int gb_samples, const int gx, const int gw) {
+    const int key = img_W << 20 ^ lead << 10 ^ gb_samples ^ gw << 28;
+    if (key == bp_col_key) return;
+    for (int i = 0; i < img_W && i < 1024; i++) {
+        const int num = (i - lead) * gw;
+        int col = gx + (num >= 0 ? num / gb_samples : -((-num + gb_samples - 1) / gb_samples));
+        bp_col[i] = col < 0 ? 0 : col >= BACKPLANE_W ? BACKPLANE_W - 1 : col;
+    }
+    bp_col_key = key;
+}
+
+static inline __attribute__((always_inline)) uint8_t* bp_samples(uint8_t* out, int i, const int end, const uint8_t* cells, const uint32_t* conv) {
+    int prev = -1;
+    uint32_t cout = 0;
+    for (; i < end; i++) {
+        const int c = bp_col[i];
+        if (c != prev) {
+            prev = c;
+            cout = conv[cells[c]];
+        }
+        *out++ = ((const uint8_t *)&cout)[i & 3];
+    }
+    return out;
+}
 volatile uint32_t graphics_frame_count = 0;
 
 static G_BUFFER graphics_buffer = {
@@ -1061,6 +1091,43 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                             const int out_rows = tv_scale == GRAPHICS_SCALE_2X ? h
                                                : tv_scale == GRAPHICS_SCALE_3X ? h * 3 / 2 : 240;
                             const int r = y - (240 - out_rows) / 2;
+                            const uint8_t* const bp_cells = backplane_cells;
+                            const uint8_t* const bp = bp_cells ? bp_cells + y * BACKPLANE_W : NULL;
+                            if (bp) {
+                                // the same geometry as below; the game window in the cells: 160 or 240 wide, centred
+                                const int w = graphics_buffer.width;
+                                const int di_sq = (tv_out_mode.c_freq == _4433619) ? 107 : 111;
+                                int gb_samples = tv_scale == GRAPHICS_SCALE_2X ? (w * 0x100 + di_sq - 1) / di_sq
+                                                                               : (w * 0x100 * 3 / 2 + di_sq - 1) / di_sq;
+                                if (gb_samples > video_mode.img_W) gb_samples = video_mode.img_W;
+                                int lead = ((video_mode.img_W - gb_samples) / 2) & ~3;
+                                if (lead < 0) lead = 0;
+                                const int img_W = video_mode.img_W < 1024 ? video_mode.img_W : 1024;
+                                const int gw = tv_scale == GRAPHICS_SCALE_2X ? 160 : 240;
+                                bp_prepare_columns(img_W, lead, gb_samples, (BACKPLANE_W - gw) / 2, gw);
+                                if (r < 0 || r >= out_rows) {
+                                    bp_samples(output_buffer8, 0, img_W, bp, conv_color[li]);
+                                } else {
+                                    const uint8_t* src = input_buffer + (r * h / out_rows) * w;
+                                    const int di_gb = (w * 0x100 + gb_samples - 1) / gb_samples;
+                                    int count = gb_samples;
+                                    if (lead + count > img_W) count = img_W - lead;
+                                    uint8_t* out = bp_samples(output_buffer8, 0, lead, bp, conv_color[li]);
+                                    uint8_t color = *src++;
+                                    uint32_t cout32 = conv_color[li][color];
+                                    int x = 0, acc = 0x100;
+                                    for (int i = 0; i < count; i++) {
+                                        *out++ = ((const uint8_t *)&cout32)[i & 3];
+                                        acc -= di_gb;
+                                        if (acc <= 0) {
+                                            if (++x < w) color = *src++;
+                                            cout32 = conv_color[li][color];
+                                            acc += 0x100;
+                                        }
+                                    }
+                                    bp_samples(out, lead + count, img_W, bp, conv_color[li]);
+                                }
+                            } else
                             if (r < 0 || r >= out_rows) {
                                 memset(output_buffer8, video_mode.LVL_BLACK_TMPL, video_mode.img_W);
                             } else {

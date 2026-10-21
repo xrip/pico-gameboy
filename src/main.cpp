@@ -24,6 +24,7 @@
 /* C Headers */
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 /* RP2040 Headers */
 #include "pico/runtime.h"
@@ -49,6 +50,7 @@
 #include "hedley.h"
 #include "peanut_gb.h"
 #include "gbcolors.h"
+#include "mono_palettes.h"
 
 /* Murmulator board */
 #include "graphics.h"
@@ -161,16 +163,36 @@ static FATFS fs;
 
 uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
 
-#if TFT
-#define RGB565_TO_RGB888(rgb565) (rgb565)
-#else
-#define RGB565_TO_RGB888(rgb565) ((((rgb565) & 0xF800) << 8) | (((rgb565) & 0x07E0) << 5) | (((rgb565) & 0x001F) << 3))
-#endif
-
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
 static palette_t palette16; // Colour palette
-static uint8_t manual_palette_selected = 0; // auto
+
+/* Colours of Game Boy (not Color) games, as in pico-wonderswan: each of the
+ * three palettes (background, sprites 0, sprites 1 - 4 shades each) has its
+ * own selector: AUTO / the GBC boot palettes (the colours this palette gets
+ * there), the pico-gamate four-colour palettes, Random or Custom.  The palette
+ * editor shows all 12 colours; editing one turns its palette into Custom.
+ * One selector above them sets all three; they are chosen one by one only
+ * when it is CUSTOM. */
+enum palette_layer_e : uint8_t { LAYER_BG = 0, LAYER_OBJ0, LAYER_OBJ1, LAYER_COUNT };
+/* the core (LCD_PALETTE_ALL) and gbcolors.h number them OBJ0, OBJ1, BG */
+static const uint8_t layer_hw[LAYER_COUNT] = { 2, 0, 1 };
+static constexpr uint8_t PALETTE_AUTO = 0;                               // by the game (GBC boot ROM)
+static constexpr uint8_t PALETTE_MONO_FIRST = NUMBER_OF_MANUAL_PALETTES; // pico-gamate 4-colour palettes
+static constexpr uint8_t PALETTE_RANDOM = PALETTE_MONO_FIRST + MONO_PALETTES_NUMBER;
+static constexpr uint8_t PALETTE_CUSTOM = PALETTE_RANDOM + 1;
+/* the selector for all three palettes; with CUSTOM each has its own one */
+static uint8_t palette_all = PALETTE_AUTO;
+static uint8_t palette_index[LAYER_COUNT] = { PALETTE_AUTO, PALETTE_AUTO, PALETTE_AUTO };
+static uint32_t pal_rgb[LAYER_COUNT][4];    // the colours in use, RGB888
+static uint32_t random_rgb[LAYER_COUNT][4]; // what Random drew
+static uint32_t custom_rgb[LAYER_COUNT][4] = {
+    {0xCCFFFF, 0xFFB266, 0xCC0066, 0x663300},
+    {0xCCFFFF, 0xFFB266, 0xCC0066, 0x663300},
+    {0xCCFFFF, 0xFFB266, 0xCC0066, 0x663300},
+};
+static bool game_ini_linked = false;
+static char rom_file[80] = "";      // the ROM file name, for the game palette
 
 struct input_bits_t {
     bool a: true;
@@ -225,6 +247,14 @@ static volatile bool kbd_page_up = false;
 static volatile bool kbd_page_down = false;
 static volatile bool kbd_home = false;
 static volatile bool kbd_end = false;
+static volatile int8_t kbd_hex_key = -1;     // a hex digit just pressed (palette editor)
+static volatile bool kbd_hex_mode = false;   // the palette editor is open: A-F, W, S are digits
+static volatile int8_t palette_layer_cycle_requested = 0; // F1..F3 (+Shift): +-(layer + 1)
+static volatile bool palette_shuffle_requested = false;         // F7
+static volatile bool palette_shuffle_requested_no_save = false; // F6
+static volatile bool palette_save_requested = false;            // F8
+static volatile bool palette_default_requested = false;         // F9
+static volatile bool palette_editor_requested = false;          // F12
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -243,10 +273,22 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     bool b1 = isInReport(report, HID_KEY_KEYPAD_1);
     bool b3 = isInReport(report, HID_KEY_KEYPAD_3);
 
-    keyboard.up = b7 || b9 || isInReport(report, HID_KEY_ARROW_UP) || isInReport(report, HID_KEY_W) || isInReport(report, HID_KEY_KEYPAD_8);
-    keyboard.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || isInReport(report, HID_KEY_S) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
-    keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
-    keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
+    const bool wasd = !kbd_hex_mode;
+    keyboard.up = b7 || b9 || isInReport(report, HID_KEY_ARROW_UP) || (wasd && isInReport(report, HID_KEY_W)) || isInReport(report, HID_KEY_KEYPAD_8);
+    keyboard.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || (wasd && isInReport(report, HID_KEY_S)) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
+    keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || (wasd && isInReport(report, HID_KEY_A)) || isInReport(report, HID_KEY_KEYPAD_4);
+    keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || (wasd && isInReport(report, HID_KEY_D)) || isInReport(report, HID_KEY_KEYPAD_6);
+
+    // hex digits for the palette editor: 0-9 of the main block, A-F
+    if (kbd_hex_mode) {
+        static const uint8_t hex_keys[16] = {
+            HID_KEY_0, HID_KEY_1, HID_KEY_2, HID_KEY_3, HID_KEY_4, HID_KEY_5, HID_KEY_6, HID_KEY_7,
+            HID_KEY_8, HID_KEY_9, HID_KEY_A, HID_KEY_B, HID_KEY_C, HID_KEY_D, HID_KEY_E, HID_KEY_F
+        };
+        for (int8_t h = 0; h < 16; h++)
+            if (isInReport(report, hex_keys[h]) && !isInReport(prev_report, hex_keys[h]))
+                kbd_hex_key = h;
+    }
 
     kbd_page_up = isInReport(report, HID_KEY_PAGE_UP);
     kbd_page_down = isInReport(report, HID_KEY_PAGE_DOWN);
@@ -270,6 +312,27 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         else if (isInReport(report, HID_KEY_F7)) fxPressed = 7;
         else if (isInReport(report, HID_KEY_F8)) fxPressed = 8;
         fxPressedV = fxPressed;
+    }
+    else {
+        /* palette keys (as in pico-wonderswan): F1..F3 - the next palette of
+         * BG / OBJ0 / OBJ1 (with Shift - the previous one), F6 - shuffle,
+         * F7 - shuffle and save, F8 - save the colours for this game,
+         * F9 - all AUTO, F12 - the palette editor */
+        const bool shift = isInReport(report, HID_KEY_SHIFT_LEFT) || isInReport(report, HID_KEY_SHIFT_RIGHT);
+        static const uint8_t layer_keys[LAYER_COUNT] = { HID_KEY_F1, HID_KEY_F2, HID_KEY_F3 };
+        for (int8_t layer = 0; layer < LAYER_COUNT; layer++)
+            if (isInReport(report, layer_keys[layer]) && !isInReport(prev_report, layer_keys[layer]))
+                palette_layer_cycle_requested = shift ? -(layer + 1) : layer + 1;
+        if (isInReport(report, HID_KEY_F6) && !isInReport(prev_report, HID_KEY_F6))
+            palette_shuffle_requested_no_save = true;
+        if (isInReport(report, HID_KEY_F7) && !isInReport(prev_report, HID_KEY_F7))
+            palette_shuffle_requested = true;
+        if (isInReport(report, HID_KEY_F8) && !isInReport(prev_report, HID_KEY_F8))
+            palette_save_requested = true;
+        if (isInReport(report, HID_KEY_F9) && !isInReport(prev_report, HID_KEY_F9))
+            palette_default_requested = true;
+        if (isInReport(report, HID_KEY_F12) && !isInReport(prev_report, HID_KEY_F12))
+            palette_editor_requested = true;
     }
 }
 
@@ -880,6 +943,12 @@ bool filebrowser_loadfile(const char pathname[256]) {
     if (total_read != load_size)
         return fail("ERROR: ROM load failed!           ");
 
+    {
+        const char* name = pathname;
+        for (const char* q = pathname; *q; q++)
+            if (*q == '\\' || *q == '/') name = q + 1;
+        snprintf(rom_file, sizeof rom_file, "%s", name);
+    }
     if (use_psram) {
         rom_psram_size = load_size;
         rom_in_psram = 1;
@@ -896,6 +965,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 /* Where the browser was left: re-entering it opens the same directory with
  * the same entry under the cursor (e.g. the ROM that was just played). */
 static char fb_dir[256] = "\\GB";
+static bool fb_menu_requested = false; // START+SELECT in the browser
 static char fb_focus[80] = "";
 
 static void fb_remember(const char* dir, const char* name) {
@@ -907,7 +977,9 @@ static void fb_remember(const char* dir, const char* name) {
 
 /* Returns when a ROM is ready to run: a newly loaded one (START) or the
  * previous one (SELECT). */
-void filebrowser(const char executables[11]) {
+static bool gbbp_try_install(const char* pathname); // a .gbbp file: install it as the backplane
+
+void filebrowser(const char* executables) {
     input_gate_t gate;
     char basepath[256];
     char focus[80];
@@ -1013,8 +1085,10 @@ void filebrowser(const char executables[11]) {
 
             const uint8_t keys = gate.read();
 
-            // SELECT: run the previous cartridge
-            if (keys & BTN_SELECT) {
+            // SELECT: run the previous cartridge; START+SELECT: and open the menu (as in the game)
+            if ((keys & BTN_SELECT) ||
+                (keys & BTN_START && (input_held() & (BTN_START | BTN_SELECT)) == (BTN_START | BTN_SELECT))) {
+                fb_menu_requested = (input_held() & BTN_START) != 0;
                 fb_remember(basepath, fileItems[offset + current_item].filename);
                 rom = previous_rom();
                 return;
@@ -1111,8 +1185,14 @@ void filebrowser(const char executables[11]) {
 
                 if (file_at_cursor.is_executable) {
                     char fullpath[256];
-                    if (snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath, file_at_cursor.filename) <
-                        (int)sizeof fullpath && filebrowser_loadfile(fullpath)) {
+                    const bool path_ok = snprintf(fullpath, sizeof fullpath, "%s\\%s", basepath,
+                                                  file_at_cursor.filename) < (int)sizeof fullpath;
+                    if (path_ok && gbbp_try_install(fullpath)) {
+                        // its message covered the list: redraw it, same entry
+                        strcpy(focus, file_at_cursor.filename);
+                        break;
+                    }
+                    if (path_ok && filebrowser_loadfile(fullpath)) {
                         fb_remember(basepath, file_at_cursor.filename);
                         return;
                     }
@@ -1172,6 +1252,8 @@ enum menu_type_e {
     SAVE,
     LOAD,
     ROM_SELECT,
+    GAME_INI,
+    PALETTE_EDITOR,
     RETURN,
 };
 
@@ -1183,7 +1265,7 @@ typedef struct __attribute__((__packed__)) {
     const void* value;
     menu_callback_t callback;
     uint8_t max_value;
-    char value_list[15][15];
+    char value_list[49][18];
 } MenuItem;
 
 static int save_slot = 0;
@@ -1213,20 +1295,66 @@ bool overclock() {
 #endif
 }
 
-static bool save() {
-    char pathname[255];
+/* The configuration, the game palettes and the saved states live in
+ * /.config/gbc, apart from the games (as in pico-gamate); the settings are
+ * kept per board and video output. */
+#define CONFIG_DIR "/.config/gbc"
+
+static const char* config_platform_name() {
+#ifdef PICO_RP2350
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p2";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp2";
+    if (strcmp(PICO_BOARD, "waveshare_rp2350_pizero") == 0) return "z0p2";
+    return "m1p2";
+#else
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p1";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp1";
+    if (strcmp(PICO_BOARD, "waveshare_rp2040_pizero") == 0) return "z0p1";
+    return "m1p1";
+#endif
+}
+
+static const char* config_video_name() {
+#if TFT
+    return "tft";
+#elif HDMI
+    return "hdmi";
+#elif TV
+    return "tv";
+#elif SOFTTV
+    return "softtv";
+#else
+    return "vga";
+#endif
+}
+
+static void config_mkdirs() {
+    char path[64];
+    f_mkdir("/.config"); // nothing happens if it is already there
+    f_mkdir(CONFIG_DIR);
+    snprintf(path, sizeof path, CONFIG_DIR "/%s", config_platform_name());
+    f_mkdir(path);
+    snprintf(path, sizeof path, CONFIG_DIR "/%s/%s", config_platform_name(), config_video_name());
+    f_mkdir(path);
+}
+
+static void state_path(char* pathname, size_t size, const char* dir) {
     char filename[24];
     gb_get_rom_name(&gb, filename);
+    if (save_slot)
+        snprintf(pathname, size, "%s/%s_%d.save", dir, filename, save_slot);
+    else
+        snprintf(pathname, size, "%s/%s.save", dir, filename);
+}
 
-    if (save_slot) {
-        sprintf(pathname, "%s\\%s_%d.save", HOME_DIR, filename, save_slot);
-    }
-    else {
-        sprintf(pathname, "%s\\%s.save", HOME_DIR, filename);
-    }
+static bool save() {
+    char pathname[255];
+    config_mkdirs();
+    state_path(pathname, sizeof pathname, CONFIG_DIR);
 
-    FIL fd;
-    f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
+    static FIL fd; // static: core 0 has a small stack
+    if (FR_OK != f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE))
+        return true;
     UINT bw;
     f_write(&fd, &gb, sizeof(gb), &bw);
     f_write(&fd, ram, sizeof(ram), &bw);
@@ -1237,18 +1365,13 @@ static bool save() {
 
 static bool load() {
     char pathname[255];
-    char filename[24];
-    gb_get_rom_name(&gb, filename);
-
-    if (save_slot) {
-        sprintf(pathname, "GB\\%s_%d.save", filename, save_slot);
+    static FIL fd; // static: core 0 has a small stack
+    state_path(pathname, sizeof pathname, CONFIG_DIR);
+    if (FR_OK != f_open(&fd, pathname, FA_READ)) {
+        state_path(pathname, sizeof pathname, HOME_DIR); // saved by an older version
+        if (FR_OK != f_open(&fd, pathname, FA_READ))
+            return true;
     }
-    else {
-        sprintf(pathname, "GB\\%s.save", filename);
-    }
-
-    FIL fd;
-    f_open(&fd, pathname, FA_READ);
     UINT br;
     f_read(&fd, &gb, sizeof(gb), &br);
     f_read(&fd, ram, sizeof(ram), &br);
@@ -1266,32 +1389,840 @@ static uint8_t screen_scale = 1;
 #else
 static uint8_t screen_scale = 0;
 #endif
+/* HDMI / VGA / TV-SOFT on RP2350: the Game Boy Color picture around the game
+ * in 2x and 3x (the cells take 75 KB of RAM - no room on RP2040) */
+#if (VGA || HDMI || SOFTTV) && PICO_RP2350
+#define BACKPLANE 1
+static uint8_t backplane = 1;
+
+/* A backplane file (.gbbp) replaces the built-in one:
+ *   "GBBP", version (1 byte, GBBP_VERSION) - other versions are refused;
+ *   for HDMI / VGA (320 cells across), then for TV-SOFT (384 cells):
+ *     32 colours (R, G, B bytes), the 2x cells, the 3x cells (W x 240 colour
+ *     numbers 0..31 each, a row after row; the game window cells are unused).
+ * A TV-SOFT build reads its part after the HDMI / VGA one.  Installed from the
+ * file manager: copied to /.config/gbc/backplane.gbbp and shown from then on
+ * (delete that file for the built-in one). */
+#define GBBP_VERSION 1
+#define GBBP_FILE CONFIG_DIR "/backplane.gbbp"
+static constexpr uint32_t gbbp_part(const uint32_t w) { return BACKPLANE_LOADED_COLORS * 3 + 2 * w * 240; }
+static constexpr uint32_t GBBP_HEADER = 5;
+static constexpr uint32_t GBBP_SIZE = GBBP_HEADER + gbbp_part(320) + gbbp_part(384);
+
+static bool gbbp_header_ok(FIL* f) {
+    uint8_t h[GBBP_HEADER];
+    UINT br = 0;
+    return f_size(f) == GBBP_SIZE && f_lseek(f, 0) == FR_OK && f_read(f, h, sizeof h, &br) == FR_OK &&
+           br == sizeof h && !memcmp(h, "GBBP", 4) && h[4] == GBBP_VERSION;
+}
+
+/* the installed backplane, the part of this build, the cells of the scale */
+static bool gbbp_load(const enum graphics_scale_t scale) {
+    static FIL f; // static: core 0 has a small stack
+    if (f_open(&f, GBBP_FILE, FA_READ) != FR_OK) return false;
+    bool ok = gbbp_header_ok(&f);
+    static uint8_t rgb[BACKPLANE_LOADED_COLORS * 3];
+    const uint32_t part = GBBP_HEADER + (BACKPLANE_W == 384 ? gbbp_part(320) : 0);
+    const UINT cells_size = BACKPLANE_W * BACKPLANE_H;
+    UINT br = 0;
+    ok = ok && f_lseek(&f, part) == FR_OK && f_read(&f, rgb, sizeof rgb, &br) == FR_OK && br == sizeof rgb;
+    uint8_t* const buffer = ok ? backplane_buffer() : nullptr;
+    ok = buffer && f_lseek(&f, part + sizeof rgb + (scale == GRAPHICS_SCALE_3X ? cells_size : 0)) == FR_OK &&
+         f_read(&f, buffer, cells_size, &br) == FR_OK && br == cells_size;
+    f_close(&f);
+    if (ok) backplane_show_loaded(rgb);
+    return ok; // otherwise the built-in one is unpacked again
+}
+
+static void apply_backplane() {
+    const auto scale = (enum graphics_scale_t)screen_scale;
+    if (backplane && scale != GRAPHICS_SCALE_STRETCH && gbbp_load(scale)) return;
+    graphics_set_backplane(backplane, scale);
+}
+
+static bool gbbp_try_install(const char* pathname) {
+    const char* dot = strrchr(pathname, '.');
+    if (!dot || strcasecmp(dot, ".gbbp") != 0) return false;
+
+    const int window_w = (int)TEXTMODE_COLS < 43 ? (int)TEXTMODE_COLS : 43;
+    const int window_y = (TEXTMODE_ROWS - 5) / 2;
+    const int window_x = ((int)TEXTMODE_COLS - window_w) / 2;
+    draw_window("Backplan", window_x, window_y, window_w, 5);
+
+    static FIL src, dst; // static: core 0 has a small stack
+    const char* message = "This backplan version is unsupported";
+    bool installed = false;
+    if (f_open(&src, pathname, FA_READ) == FR_OK) {
+        if (gbbp_header_ok(&src)) {
+            message = "ERROR: can't write the backplan";
+            config_mkdirs();
+            if (f_lseek(&src, 0) == FR_OK && f_open(&dst, GBBP_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+                static uint8_t chunk[4096];
+                bool ok = true;
+                for (UINT br = 1; ok && br;) {
+                    UINT bw = 0;
+                    ok = f_read(&src, chunk, sizeof chunk, &br) == FR_OK &&
+                         f_write(&dst, chunk, br, &bw) == FR_OK && bw == br;
+                }
+                ok = f_close(&dst) == FR_OK && ok;
+                if (ok) {
+                    message = "Backplan is installed";
+                    installed = true;
+                }
+                else {
+                    f_unlink(GBBP_FILE);
+                }
+            }
+        }
+        f_close(&src);
+    }
+    if (installed) apply_backplane();
+    draw_text(message, window_x + 1, window_y + 2, installed ? 10 : 13, 1);
+    sleep_ms(2000);
+    return true;
+}
+#else
+static bool gbbp_try_install(const char*) { return false; }
+#endif
 #ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
 #define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
 #else
 #define TEXT_BUFFER_COLS TEXTMODE_COLS
 #endif
+
+static const uint32_t preset_rgb0[] = {
+    0xD4FFFD, 0xD4FFF3, 0xFFE9FA, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
+    0xF5FFE9, 0xFFF8E9, 0xFFF2F0, 0xD4FFDA, 0xEDFFD4
+};
+static const uint32_t preset_rgb1[] = {
+    // Cold (B4:G4), then warm (H4:N4).
+    0x92F937, 0x37F992, 0x37F9D9, 0x37D9F9, 0x62BAC7, 0xC0CBD5,
+    0xE29BE2, 0xBDC762, 0xF79036, 0xFF8000, 0xD2F937, 0xE29BB7,
+    0xE0A3F1
+};
+static const uint32_t preset_rgb2[] = {
+    // Cold (B5:G5), then warm (H5:N5).
+    0x139566, 0x349BC0, 0x009999, 0x319413, 0x9039D2, 0x137294,
+    0xCD3476, 0xCD34B8, 0x909413, 0xD58B41, 0xD8C835, 0xC339A5,
+    0xE07100
+};
+static const uint32_t preset_rgb3[] = {
+    0x6C6800, 0x6B0400, 0x366C00, 0x006C48, 0x00686C, 0x00326C,
+    0x04006C, 0x44006C, 0x6C0044, 0x6C0004, 0x000000
+};
+static constexpr uint8_t RANDOM_RGB1_COLD_COUNT = 6; // B4:G4
+static constexpr uint8_t RANDOM_RGB2_COLD_COUNT = 6; // B5:G5
+
+static uint32_t rgb565_to_rgb888(const uint16_t c) {
+    const uint32_t r = c >> 11 & 31, g = c >> 5 & 63, b = c & 31;
+    return (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+}
+
+/* the colours in use go to the video driver (slots 0..11); a Game Boy Color
+ * game keeps its own palette in slots 0..191 */
+static void palette_apply() {
+    if (gb.cgb.cgbMode) return;
+    for (int i = 0; i < LAYER_COUNT; i++)
+        for (int j = 0; j < 4; j++) {
+            const uint32_t c = pal_rgb[i][j];
+            // RGB888() does not bracket its arguments: plain values only
+            const uint32_t r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+            const uint8_t slot = layer_hw[i] * 4 + j;
+            graphics_set_palette(slot, RGB888(r, g, b));
+            palette[layer_hw[i]][j] = slot;
+        }
+}
+
+static uint32_t palette_random_state = 0;
+
+static uint32_t palette_random_next() {
+    if (!palette_random_state)
+        palette_random_state = (uint32_t)time_us_64() ^ 0x9E3779B9u;
+    palette_random_state ^= palette_random_state << 13;
+    palette_random_state ^= palette_random_state >> 17;
+    palette_random_state ^= palette_random_state << 5;
+    return palette_random_state;
+}
+
+/* Random as in pico-gamate: shades from the light / middle / dark lists, the
+ * second middle one of the opposite temperature */
+static void randomize_layer(const unsigned layer) {
+    uint32_t* const c = random_rgb[layer];
+    c[0] = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
+    const uint8_t i1 = palette_random_next() % count_of(preset_rgb1);
+    c[1] = preset_rgb1[i1];
+    if (i1 < RANDOM_RGB1_COLD_COUNT) {
+        const uint8_t warm_count = count_of(preset_rgb2) - RANDOM_RGB2_COLD_COUNT;
+        c[2] = preset_rgb2[RANDOM_RGB2_COLD_COUNT + palette_random_next() % warm_count];
+    }
+    else {
+        c[2] = preset_rgb2[palette_random_next() % RANDOM_RGB2_COLD_COUNT];
+    }
+    c[3] = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
+}
+
+/* the selector a palette follows */
+static uint8_t layer_selector(const unsigned layer) {
+    return palette_all == PALETTE_CUSTOM ? palette_index[layer] : palette_all;
+}
+
+/* the palettes get their own selectors (keeping the colours shown) */
+static void palette_split() {
+    if (palette_all == PALETTE_CUSTOM) return;
+    for (unsigned layer = 0; layer < LAYER_COUNT; layer++) palette_index[layer] = palette_all;
+    palette_all = PALETTE_CUSTOM;
+}
+
+static void randomize_random_layers() {
+    for (unsigned layer = 0; layer < LAYER_COUNT; layer++)
+        if (layer_selector(layer) == PALETTE_RANDOM) randomize_layer(layer);
+}
+
+/* the colours of every palette by its selector */
+static void update_palette() {
+    bool gbc_palette_ready = false;
+    uint8_t gbc_palette_of = 0xff;
+    for (unsigned layer = 0; layer < LAYER_COUNT; layer++) {
+        const uint8_t sel = layer_selector(layer);
+        uint32_t* const out = pal_rgb[layer];
+        if (sel < PALETTE_MONO_FIRST) {
+            // AUTO / a GBC boot palette: the colours this palette gets there
+            if (!gbc_palette_ready || gbc_palette_of != sel) {
+                if (sel == PALETTE_AUTO) {
+                    char rom_title[16];
+                    auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
+                }
+                else {
+                    manual_assign_palette(palette16, sel);
+                }
+                gbc_palette_ready = true;
+                gbc_palette_of = sel;
+            }
+            for (int j = 0; j < 4; j++) out[j] = rgb565_to_rgb888(palette16[layer_hw[layer]][j]);
+        }
+        else if (sel < PALETTE_RANDOM) {
+            const uint8_t* m = mono_palettes[sel - PALETTE_MONO_FIRST];
+            for (int j = 0; j < 4; j++) out[j] = m[j * 3] << 16 | m[j * 3 + 1] << 8 | m[j * 3 + 2];
+        }
+        else if (sel == PALETTE_RANDOM) {
+            memcpy(out, random_rgb[layer], sizeof random_rgb[layer]);
+        }
+        else {
+            memcpy(out, custom_rgb[layer], sizeof custom_rgb[layer]);
+        }
+    }
+    palette_apply();
+}
+
+/* the colours saved for a game: /.config/gbc/<ROM file name>.ini */
+static bool game_palette_ini_path(char* pathname, const size_t size) {
+    if (!rom_file[0]) return false;
+    char basename[80];
+    snprintf(basename, sizeof basename, "%s", rom_file);
+    char* dot = strrchr(basename, '.');
+    if (dot && dot != basename) *dot = '\0';
+    return snprintf(pathname, size, CONFIG_DIR "/%s.ini", basename) > 0;
+}
+
+static bool game_palette_ini_exists() {
+    char pathname[128];
+    FILINFO info;
+    return game_palette_ini_path(pathname, sizeof pathname) && FR_OK == f_stat(pathname, &info);
+}
+
+static const char* const ini_layer_keys[LAYER_COUNT] = { "bg=", "obj0=", "obj1=" };
+
+/* [palette]: the Custom colours, [layers]: the selectors; a Random palette is
+ * kept with the colours it drew (as Custom) */
+static bool write_game_palette_ini() {
+    char pathname[128];
+    if (!game_palette_ini_path(pathname, sizeof pathname)) return false;
+    config_mkdirs();
+
+    static char data[256];
+    int len = snprintf(data, sizeof data, "[palette]\r\n");
+    for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof data; i++) {
+        const uint32_t* c = layer_selector(i) == PALETTE_RANDOM ? pal_rgb[i] : custom_rgb[i];
+        len += snprintf(data + len, sizeof data - len, "%s%06lX,%06lX,%06lX,%06lX\r\n", ini_layer_keys[i],
+                        (unsigned long)c[0], (unsigned long)c[1], (unsigned long)c[2], (unsigned long)c[3]);
+    }
+    const bool all = palette_all != PALETTE_CUSTOM && palette_all != PALETTE_RANDOM;
+    if (len > 0 && len < (int)sizeof data)
+        len += snprintf(data + len, sizeof data - len, "[layers]\r\nall=%u\r\n",
+                        all ? (unsigned)palette_all : (unsigned)PALETTE_CUSTOM);
+    for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof data; i++) {
+        const unsigned sel = all ? palette_index[i]
+                           : layer_selector(i) == PALETTE_RANDOM ? PALETTE_CUSTOM : layer_selector(i);
+        len += snprintf(data + len, sizeof data - len, "%s%u\r\n", ini_layer_keys[i], sel);
+    }
+    if (len <= 0 || len >= (int)sizeof data) return false;
+
+    static FIL file; // static: core 0 has a small stack
+    if (FR_OK != f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) return false;
+    UINT written = 0;
+    const FRESULT fr = f_write(&file, data, (UINT)len, &written);
+    const FRESULT close_fr = f_close(&file);
+    return fr == FR_OK && written == (UINT)len && close_fr == FR_OK;
+}
+
+static bool parse_rgb4(const char* text, uint32_t rgb[4]) {
+    unsigned long c[4];
+    if (!text || 4 != sscanf(text, "%lx,%lx,%lx,%lx", &c[0], &c[1], &c[2], &c[3])) return false;
+    for (int j = 0; j < 4; j++) {
+        if (c[j] > 0xFFFFFFul) return false;
+        rgb[j] = (uint32_t)c[j];
+    }
+    return true;
+}
+
+static bool load_game_palette_ini() {
+    char pathname[128];
+    if (!game_palette_ini_path(pathname, sizeof pathname)) return false;
+
+    static FIL file; // static: core 0 has a small stack
+    if (FR_OK != f_open(&file, pathname, FA_READ)) return false;
+    static char data[320];
+    UINT bytes_read = 0;
+    const FRESULT fr = f_read(&file, data, sizeof data - 1, &bytes_read);
+    f_close(&file);
+    if (fr != FR_OK || bytes_read == 0) return false;
+    data[bytes_read] = '\0';
+
+    uint32_t rgb[LAYER_COUNT][4];
+    char* const layers = strstr(data, "[layers]");
+    if (layers) *layers = '\0'; // the colours are searched in [palette] only
+    for (unsigned i = 0; i < LAYER_COUNT; i++) {
+        const char* line = strstr(data, ini_layer_keys[i]);
+        if (!line || !parse_rgb4(line + strlen(ini_layer_keys[i]), rgb[i])) return false;
+    }
+    memcpy(custom_rgb, rgb, sizeof custom_rgb);
+    for (unsigned i = 0; i < LAYER_COUNT; i++) {
+        // no [layers] (a file of the previous version): every palette is Custom
+        const char* line = layers ? strstr(layers + 1, ini_layer_keys[i]) : nullptr;
+        const unsigned long sel = line ? strtoul(line + strlen(ini_layer_keys[i]), nullptr, 10) : PALETTE_CUSTOM;
+        palette_index[i] = sel <= PALETTE_CUSTOM ? (uint8_t)sel : PALETTE_CUSTOM;
+    }
+    // no "all=" (an older file): every palette by its own selector
+    const char* all = layers ? strstr(layers + 1, "all=") : nullptr;
+    const unsigned long sel_all = all ? strtoul(all + 4, nullptr, 10) : PALETTE_CUSTOM;
+    palette_all = sel_all <= PALETTE_CUSTOM ? (uint8_t)sel_all : PALETTE_CUSTOM;
+    randomize_random_layers();
+    update_palette();
+    return true;
+}
+
+static bool game_ini_action() {
+    if (gb.cgb.cgbMode) return false;
+    char pathname[128];
+    if (!game_palette_ini_path(pathname, sizeof pathname)) return false;
+    if (game_ini_linked) {
+        const FRESULT fr = f_unlink(pathname);
+        if (fr == FR_OK || fr == FR_NO_FILE) game_ini_linked = false;
+    }
+    else if (write_game_palette_ini()) {
+        game_ini_linked = true;
+    }
+    return false;
+}
+
+static void apply_game_palette_on_load() {
+    game_ini_linked = game_palette_ini_exists();
+    if (!load_game_palette_ini()) {
+        randomize_random_layers(); // new colours for every game
+        update_palette();
+    }
+}
+
+static void f_save_conf(void);
+
+/* ---- the palette editor: the 12 colours as 3 rows (BG, OBJ0, OBJ1) of 4 ---- */
+static constexpr int PE_W = LCD_WIDTH / 4;  // 40
+static constexpr int PE_H = LCD_HEIGHT / 3; // 48
+
+/* 3x5 glyphs: 0-9, A-F, G, J, O, space */
+static void pe_char(uint8_t* buf, const int x, const int y, const char ch, const uint8_t color) {
+    static const char chars[] = "0123456789ABCDEFGJO ";
+    static const uint8_t glyphs[][5] = {
+        {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7},
+        {5, 5, 7, 1, 1}, {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 1, 1},
+        {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7}, {7, 5, 7, 5, 5}, {6, 5, 6, 5, 6},
+        {7, 4, 4, 4, 7}, {6, 5, 5, 5, 6}, {7, 4, 7, 4, 7}, {7, 4, 7, 4, 4},
+        {7, 4, 5, 5, 7}, {1, 1, 1, 5, 7}, {2, 5, 5, 5, 2}, {0, 0, 0, 0, 0},
+    };
+    const char* p = strchr(chars, ch);
+    if (!p || !ch) return;
+    const uint8_t* g = glyphs[p - chars];
+    for (int row = 0; row < 5; row++)
+        for (int col = 0; col < 3; col++)
+            if (g[row] & (4u >> col))
+                buf[(y + row) * LCD_WIDTH + x + col] = color;
+}
+
+static void pe_text(uint8_t* buf, int x, const int y, const char* s, const uint8_t color) {
+    for (; *s; s++, x += 4) pe_char(buf, x, y, *s, color);
+}
+
+/* the most distant of the 12 colours keeps the text readable */
+static uint8_t pe_contrast(const unsigned slot) {
+    const uint32_t bg = pal_rgb[slot >> 2][slot & 3];
+    uint8_t best = 0;
+    unsigned best_distance = 0;
+    for (unsigned i = 0; i < LAYER_COUNT * 4; i++) {
+        const uint32_t fg = pal_rgb[i >> 2][i & 3];
+        const int dr = (int)(bg >> 16 & 0xFF) - (int)(fg >> 16 & 0xFF);
+        const int dg = (int)(bg >> 8 & 0xFF) - (int)(fg >> 8 & 0xFF);
+        const int db = (int)(bg & 0xFF) - (int)(fg & 0xFF);
+        const unsigned distance = dr * dr + dg * dg + db * db;
+        if (distance > best_distance) {
+            best_distance = distance;
+            best = layer_hw[i >> 2] * 4 + (i & 3); // the video palette slot
+        }
+    }
+    return best;
+}
+
+static void pe_draw(uint8_t* buf, const unsigned selected, const int edit_channel) {
+    static const char* const names[LAYER_COUNT] = { "BG", "OBJ0", "OBJ1" };
+    for (unsigned slot = 0; slot < LAYER_COUNT * 4; slot++) {
+        const int x0 = (int)(slot & 3) * PE_W;
+        const int y0 = (int)(slot >> 2) * PE_H;
+        for (int y = y0; y < y0 + PE_H; y++)
+            memset(buf + y * LCD_WIDTH + x0, layer_hw[slot >> 2] * 4 + (slot & 3), PE_W);
+
+        const uint8_t text = pe_contrast(slot);
+        char label[8];
+        snprintf(label, sizeof label, "%s %u", names[slot >> 2], slot & 3);
+        pe_text(buf, x0 + (PE_W - (int)strlen(label) * 4 + 1) / 2, y0 + 15, label, text);
+        char rgb[8];
+        snprintf(rgb, sizeof rgb, "%06lX", (unsigned long)pal_rgb[slot >> 2][slot & 3]);
+        pe_text(buf, x0 + 8, y0 + 26, rgb, text);
+
+        if (slot == selected) { // the focus frame
+            for (int x = x0 + 1; x < x0 + PE_W - 1; x++) {
+                buf[(y0 + 1) * LCD_WIDTH + x] = text;
+                buf[(y0 + PE_H - 2) * LCD_WIDTH + x] = text;
+            }
+            for (int y = y0 + 1; y < y0 + PE_H - 1; y++) {
+                buf[y * LCD_WIDTH + x0 + 1] = text;
+                buf[y * LCD_WIDTH + x0 + PE_W - 2] = text;
+            }
+            if (edit_channel >= 0) { // the edited byte: RR, GG or BB
+                const int dx = x0 + 8 + edit_channel * 8;
+                for (int x = dx; x < dx + 7; x++)
+                    buf[(y0 + 32) * LCD_WIDTH + x] = text;
+            }
+        }
+    }
+}
+
+typedef struct {
+    bool active;
+    uint64_t next_repeat;
+} pe_repeat_t;
+
+static bool pe_repeat(const bool level, pe_repeat_t* state) {
+    const uint64_t now = time_us_64();
+    if (!level) {
+        state->active = false;
+        return false;
+    }
+    if (!state->active) {
+        state->active = true;
+        state->next_repeat = now + 300000; // initial key-repeat delay
+        return true;
+    }
+    if (now >= state->next_repeat) {
+        state->next_repeat = now + 80000;
+        return true;
+    }
+    return false;
+}
+
+/* The first edit of a colour turns its palette into Custom with the colours
+ * shown, the other two palettes keep their colours (with their own selectors). */
+static void pe_ensure_custom(const unsigned layer) {
+    if (layer_selector(layer) == PALETTE_CUSTOM) return;
+    palette_split();
+    memcpy(custom_rgb[layer], pal_rgb[layer], sizeof custom_rgb[layer]);
+    palette_index[layer] = PALETTE_CUSTOM;
+}
+
+/* Arrows - a colour, Enter / A - edit it (left / right: R, G, B; up / down:
+ * the value), hex digits type RRGGBB, Esc / B - back, gamepad START or F12 -
+ * close.  The picture is drawn in the back buffer (the game is paused). */
+static void palette_editor(const bool from_menu) {
+    if (gb.cgb.cgbMode) return; // a Game Boy Color game has its own colours
+    for (int i = 0; i < 100 && frame_pending >= 0; i++) sleep_ms(1); // the render core takes it
+    uint8_t* const buf = (uint8_t *)frames[frame_back];
+    unsigned selected = 0;
+    int edit_channel = -1;
+    int hex_digit = -1;
+
+    kbd_hex_key = -1;
+    kbd_hex_mode = true;
+    palette_editor_requested = false;
+    if (from_menu) graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    graphics_set_buffer(buf, LCD_WIDTH, LCD_HEIGHT);
+    palette_apply();
+    pe_draw(buf, selected, edit_channel);
+
+    auto accept_level = [] { return keyboard.start || keyboard.a || (nespad_state & DPAD_A); };
+    auto back_level = [] { return keyboard.select || keyboard.b || (nespad_state & DPAD_B); };
+    auto close_level = [] { return (nespad_state & DPAD_START) != 0; };
+    bool accept_prev = accept_level(), back_prev = back_level(), close_prev = close_level();
+    pe_repeat_t rep_left = {}, rep_right = {}, rep_up = {}, rep_down = {};
+
+    while (true) {
+        const bool accept_now = accept_level(), back_now = back_level(), close_now = close_level();
+        const bool accept = accept_now && !accept_prev;
+        const bool back = back_now && !back_prev;
+        const bool close = (close_now && !close_prev) || palette_editor_requested;
+        accept_prev = accept_now;
+        back_prev = back_now;
+        close_prev = close_now;
+        palette_editor_requested = false;
+        const bool left = pe_repeat(gamepad_bits.left, &rep_left);
+        const bool right = pe_repeat(gamepad_bits.right, &rep_right);
+        const bool up = pe_repeat(gamepad_bits.up, &rep_up);
+        const bool down = pe_repeat(gamepad_bits.down, &rep_down);
+        const unsigned layer = selected >> 2;
+        uint32_t* const value = &pal_rgb[layer][selected & 3];
+        bool redraw = false, changed = false;
+
+        const int8_t typed = kbd_hex_key;
+        kbd_hex_key = -1;
+        if (close) {
+            break;
+        }
+        if (typed >= 0) {
+            if (hex_digit < 0) hex_digit = 0;
+            const unsigned shift = (5 - hex_digit) * 4u;
+            pe_ensure_custom(layer);
+            *value = (*value & ~(0xFu << shift)) | (uint32_t)typed << shift;
+            changed = true;
+            if (++hex_digit >= 6) {
+                hex_digit = -1;
+                edit_channel = -1;
+            }
+            else {
+                edit_channel = hex_digit >> 1;
+            }
+        }
+        else if (edit_channel < 0) {
+            if (left) selected = (selected & ~3u) | ((selected - 1) & 3u);
+            else if (right) selected = (selected & ~3u) | ((selected + 1) & 3u);
+            else if (up) selected = (selected + LAYER_COUNT * 4 - 4) % (LAYER_COUNT * 4);
+            else if (down) selected = (selected + 4) % (LAYER_COUNT * 4);
+            else if (accept) edit_channel = 0;
+            else if (back) break;
+            redraw = left || right || up || down || accept;
+        }
+        else {
+            if (left) edit_channel = (edit_channel + 2) % 3;
+            else if (right) edit_channel = (edit_channel + 1) % 3;
+            else if (up || down) {
+                const unsigned shift = (2 - edit_channel) * 8u;
+                unsigned v = *value >> shift & 0xFF;
+                if (up && v < 255) v++;
+                if (down && v > 0) v--;
+                pe_ensure_custom(layer);
+                *value = (*value & ~(0xFFu << shift)) | v << shift;
+                changed = true;
+            }
+            else if (accept || back) {
+                edit_channel = -1;
+                hex_digit = -1;
+            }
+            redraw = true;
+        }
+        if (changed) {
+            custom_rgb[layer][selected & 3] = *value;
+            palette_apply();
+            redraw = true;
+        }
+        if (redraw) pe_draw(buf, selected, edit_channel);
+        sleep_ms(10);
+    }
+
+    kbd_hex_mode = false;
+    kbd_hex_key = -1;
+    f_save_conf();
+    graphics_set_buffer((uint8_t *)frames[frame_front], LCD_WIDTH, LCD_HEIGHT);
+    if (from_menu) graphics_set_mode(TEXTMODE_DEFAULT);
+}
+
+/* keys pressed in the ROM browser or in the menu are not for the game */
+static void palette_hotkeys_clear() {
+    palette_layer_cycle_requested = 0;
+    palette_shuffle_requested = palette_shuffle_requested_no_save = false;
+    palette_save_requested = palette_default_requested = palette_editor_requested = false;
+}
+
+/* F1..F3 (+Shift), F6, F7, F8, F9, F12 - see process_kbd_report();
+ * returns true after the palette editor (keys may still be held) */
+static bool handle_palette_hotkeys() {
+    const int8_t cycle = palette_layer_cycle_requested;
+    const bool shuffle = palette_shuffle_requested;
+    const bool shuffle_no_save = palette_shuffle_requested_no_save;
+    const bool save_game = palette_save_requested;
+    const bool to_default = palette_default_requested;
+    const bool editor = palette_editor_requested;
+    palette_layer_cycle_requested = 0;
+    palette_shuffle_requested = palette_shuffle_requested_no_save = false;
+    palette_save_requested = palette_default_requested = palette_editor_requested = false;
+    if (gb.cgb.cgbMode) return false; // a Game Boy Color game has its own colours
+
+    if (cycle) {
+        const unsigned layer = (cycle < 0 ? -cycle : cycle) - 1;
+        if (layer < LAYER_COUNT) {
+            palette_split();
+            uint8_t& sel = palette_index[layer];
+            sel = cycle < 0 ? (sel + PALETTE_CUSTOM) % (PALETTE_CUSTOM + 1) : (sel + 1) % (PALETTE_CUSTOM + 1);
+            if (sel == PALETTE_RANDOM) randomize_layer(layer);
+            update_palette();
+            f_save_conf();
+        }
+    }
+    if (shuffle || shuffle_no_save) {
+        palette_all = PALETTE_CUSTOM;
+        for (unsigned layer = 0; layer < LAYER_COUNT; layer++)
+            palette_index[layer] = palette_random_next() % (PALETTE_CUSTOM + 1);
+        randomize_random_layers();
+        update_palette();
+        if (shuffle) f_save_conf();
+    }
+    if (save_game && write_game_palette_ini())
+        game_ini_linked = true;
+    if (to_default) {
+        palette_all = PALETTE_AUTO;
+        update_palette();
+        f_save_conf();
+    }
+    if (editor) {
+        palette_editor(false);
+        return true;
+    }
+    return false;
+}
+
 const MenuItem menu_items[] = {
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     { "Swap AB <> BA: %s", ARRAY, &swap_ab,  nullptr, 1, {"NO ", "YES"}},
-    { "Palette: %s ", ARRAY, &manual_palette_selected, nullptr, 12,
+    { "Palette:      %s", ARRAY, &palette_all, nullptr, PALETTE_CUSTOM,
         {
-            "0 - AUTO      ",
-            "1 - yellow-red",
-            "2 - orange    ",
-            "3 - negative  ",
-            "4 - dark green",
-            "5 - red       ",
-            "6 - pink      ",
-            "7 - green     ",
-            "8 - dark blue ",
-            "9 - pastel    ",
-            "10 - blue     ",
-            "11 - yellow   ",
-            "12 - DMG      "
+            "AUTO (by game)   ",
+            "1 - yellow-red   ",
+            "2 - orange       ",
+            "3 - negative     ",
+            "4 - dark green   ",
+            "5 - red          ",
+            "6 - pink         ",
+            "7 - green        ",
+            "8 - dark blue    ",
+            "9 - pastel       ",
+            "10 - blue        ",
+            "11 - yellow      ",
+            "12 - DMG         ",
+            "GAMATE DEFAULT   ",
+            "BLACK & WHITE    ",
+            "BGB              ",
+            "AUTUMN FOREST    ",
+            "OCEAN SAND       ",
+            "MINT SAND        ",
+            "AMBER            ",
+            "GREEN            ",
+            "BLUE             ",
+            "WATAROO          ",
+            "GB_DMG           ",
+            "GB_POCKET        ",
+            "GB_LIGHT         ",
+            "BLOSSOM_PINK     ",
+            "BUBBLES_BLUE     ",
+            "BUTTERCUP_GREEN  ",
+            "DIGIVICE         ",
+            "GAME_COM         ",
+            "GAMEKING         ",
+            "GAME_MASTER      ",
+            "GOLDEN_WILD      ",
+            "GREENSCALE       ",
+            "HOKAGE_ORANGE    ",
+            "LABO_FAWN        ",
+            "SUPER_SAIYAN     ",
+            "MICROVISION      ",
+            "MILLION_LIVE_GOLD",
+            "ODYSSEY_GOLD     ",
+            "SHINY_SKY_BLUE   ",
+            "SLIME_BLUE       ",
+            "TI_83            ",
+            "TRAVEL_WOOD      ",
+            "VIRTUAL_BOY      ",
+            "TV-LINK          ",
+            "RANDOM           ",
+            "CUSTOM           "
         }
     },
+    { "  BG:         %s", ARRAY, &palette_index[LAYER_BG], nullptr, PALETTE_CUSTOM,
+        {
+            "AUTO (by game)   ",
+            "1 - yellow-red   ",
+            "2 - orange       ",
+            "3 - negative     ",
+            "4 - dark green   ",
+            "5 - red          ",
+            "6 - pink         ",
+            "7 - green        ",
+            "8 - dark blue    ",
+            "9 - pastel       ",
+            "10 - blue        ",
+            "11 - yellow      ",
+            "12 - DMG         ",
+            "GAMATE DEFAULT   ",
+            "BLACK & WHITE    ",
+            "BGB              ",
+            "AUTUMN FOREST    ",
+            "OCEAN SAND       ",
+            "MINT SAND        ",
+            "AMBER            ",
+            "GREEN            ",
+            "BLUE             ",
+            "WATAROO          ",
+            "GB_DMG           ",
+            "GB_POCKET        ",
+            "GB_LIGHT         ",
+            "BLOSSOM_PINK     ",
+            "BUBBLES_BLUE     ",
+            "BUTTERCUP_GREEN  ",
+            "DIGIVICE         ",
+            "GAME_COM         ",
+            "GAMEKING         ",
+            "GAME_MASTER      ",
+            "GOLDEN_WILD      ",
+            "GREENSCALE       ",
+            "HOKAGE_ORANGE    ",
+            "LABO_FAWN        ",
+            "SUPER_SAIYAN     ",
+            "MICROVISION      ",
+            "MILLION_LIVE_GOLD",
+            "ODYSSEY_GOLD     ",
+            "SHINY_SKY_BLUE   ",
+            "SLIME_BLUE       ",
+            "TI_83            ",
+            "TRAVEL_WOOD      ",
+            "VIRTUAL_BOY      ",
+            "TV-LINK          ",
+            "RANDOM           ",
+            "CUSTOM           "
+        }
+    },
+    { "  OBJ0:       %s", ARRAY, &palette_index[LAYER_OBJ0], nullptr, PALETTE_CUSTOM,
+        {
+            "AUTO (by game)   ",
+            "1 - yellow-red   ",
+            "2 - orange       ",
+            "3 - negative     ",
+            "4 - dark green   ",
+            "5 - red          ",
+            "6 - pink         ",
+            "7 - green        ",
+            "8 - dark blue    ",
+            "9 - pastel       ",
+            "10 - blue        ",
+            "11 - yellow      ",
+            "12 - DMG         ",
+            "GAMATE DEFAULT   ",
+            "BLACK & WHITE    ",
+            "BGB              ",
+            "AUTUMN FOREST    ",
+            "OCEAN SAND       ",
+            "MINT SAND        ",
+            "AMBER            ",
+            "GREEN            ",
+            "BLUE             ",
+            "WATAROO          ",
+            "GB_DMG           ",
+            "GB_POCKET        ",
+            "GB_LIGHT         ",
+            "BLOSSOM_PINK     ",
+            "BUBBLES_BLUE     ",
+            "BUTTERCUP_GREEN  ",
+            "DIGIVICE         ",
+            "GAME_COM         ",
+            "GAMEKING         ",
+            "GAME_MASTER      ",
+            "GOLDEN_WILD      ",
+            "GREENSCALE       ",
+            "HOKAGE_ORANGE    ",
+            "LABO_FAWN        ",
+            "SUPER_SAIYAN     ",
+            "MICROVISION      ",
+            "MILLION_LIVE_GOLD",
+            "ODYSSEY_GOLD     ",
+            "SHINY_SKY_BLUE   ",
+            "SLIME_BLUE       ",
+            "TI_83            ",
+            "TRAVEL_WOOD      ",
+            "VIRTUAL_BOY      ",
+            "TV-LINK          ",
+            "RANDOM           ",
+            "CUSTOM           "
+        }
+    },
+    { "  OBJ1:       %s", ARRAY, &palette_index[LAYER_OBJ1], nullptr, PALETTE_CUSTOM,
+        {
+            "AUTO (by game)   ",
+            "1 - yellow-red   ",
+            "2 - orange       ",
+            "3 - negative     ",
+            "4 - dark green   ",
+            "5 - red          ",
+            "6 - pink         ",
+            "7 - green        ",
+            "8 - dark blue    ",
+            "9 - pastel       ",
+            "10 - blue        ",
+            "11 - yellow      ",
+            "12 - DMG         ",
+            "GAMATE DEFAULT   ",
+            "BLACK & WHITE    ",
+            "BGB              ",
+            "AUTUMN FOREST    ",
+            "OCEAN SAND       ",
+            "MINT SAND        ",
+            "AMBER            ",
+            "GREEN            ",
+            "BLUE             ",
+            "WATAROO          ",
+            "GB_DMG           ",
+            "GB_POCKET        ",
+            "GB_LIGHT         ",
+            "BLOSSOM_PINK     ",
+            "BUBBLES_BLUE     ",
+            "BUTTERCUP_GREEN  ",
+            "DIGIVICE         ",
+            "GAME_COM         ",
+            "GAMEKING         ",
+            "GAME_MASTER      ",
+            "GOLDEN_WILD      ",
+            "GREENSCALE       ",
+            "HOKAGE_ORANGE    ",
+            "LABO_FAWN        ",
+            "SUPER_SAIYAN     ",
+            "MICROVISION      ",
+            "MILLION_LIVE_GOLD",
+            "ODYSSEY_GOLD     ",
+            "SHINY_SKY_BLUE   ",
+            "SLIME_BLUE       ",
+            "TI_83            ",
+            "TRAVEL_WOOD      ",
+            "VIRTUAL_BOY      ",
+            "TV-LINK          ",
+            "RANDOM           ",
+            "CUSTOM           "
+        }
+    },
+    { "Palette editor", PALETTE_EDITOR },
+    { "", GAME_INI, nullptr, &game_ini_action },
     {},
     { "Save state: %i", INT, &save_slot, &save, 8 },
     { "Load state: %i", INT, &save_slot, &load, 8 },
@@ -1302,6 +2233,9 @@ const MenuItem menu_items[] = {
 #if VGA || HDMI || SOFTTV
     { "" },
     { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
+#if BACKPLANE
+    { "Backplane: %s", ARRAY, &backplane, nullptr, 1, { "OFF", "ON " } },
+#endif
 #endif
     {},
 {
@@ -1314,41 +2248,105 @@ const MenuItem menu_items[] = {
 };
 #define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
+/* key=value text: a new key never invalidates an existing file */
+static void config_path(char* pathname, const size_t size) {
+    snprintf(pathname, size, CONFIG_DIR "/%s/%s/config.ini", config_platform_name(), config_video_name());
+}
+
 static void f_load_conf(void) {
-    FIL f;
-    if (f_open(&f, "/GB/gb.conf", FA_READ) == FR_OK) {
+    static FIL f; // static: core 0 has a small stack
+    char pathname[96];
+    config_path(pathname, sizeof pathname);
+    if (f_open(&f, pathname, FA_READ) == FR_OK) {
+        static char text[512];
+        UINT br = 0;
+        if (f_read(&f, text, sizeof text - 1, &br) != FR_OK) br = 0;
+        f_close(&f);
+        text[br] = '\0';
+        for (char* line = strtok(text, "\r\n"); line; line = strtok(nullptr, "\r\n")) {
+            char* val = strchr(line, '=');
+            if (!val) continue;
+            *val++ = '\0';
+            const unsigned long d = strtoul(val, nullptr, 10);
+            if (!strcmp(line, "swap_ab")) swap_ab = d ? 1 : 0;
+            else if (!strcmp(line, "tv_system")) tv_system = d <= 1 ? (uint8_t)d : 0;
+#if BACKPLANE
+            else if (!strcmp(line, "backplane")) backplane = d ? 1 : 0;
+#endif
+            else if (!strcmp(line, "palette_all")) palette_all = d <= PALETTE_CUSTOM ? (uint8_t)d : PALETTE_AUTO;
+            else if (!strcmp(line, "screen")) screen_scale = d <= GRAPHICS_SCALE_STRETCH ? (uint8_t)d : screen_scale;
+            else if (!strncmp(line, "palette", 7) || !strncmp(line, "custom", 6)) {
+                const bool custom = line[0] == 'c';
+                const unsigned layer = strtoul(line + (custom ? 6 : 7), nullptr, 10);
+                if (layer >= LAYER_COUNT) continue;
+                if (custom) parse_rgb4(val, custom_rgb[layer]);
+                else palette_index[layer] = d <= PALETTE_CUSTOM ? (uint8_t)d : PALETTE_AUTO;
+            }
+        }
+    }
+    else if (f_open(&f, "/GB/gb.conf", FA_READ) == FR_OK) {
+        // the settings of an older version: swap AB, palette (0..12 as now), TV system, screen
         UINT br;
+        uint8_t v = 0;
         f_read(&f, &swap_ab, 1, &br);
-        f_read(&f, &manual_palette_selected, 1, &br);
-        // the same layout for all builds; older configs end earlier
-        uint8_t v;
+        if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v < PALETTE_MONO_FIRST)
+            palette_all = v;
         if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= 1) tv_system = v;
         if (f_read(&f, &v, 1, &br) == FR_OK && br == 1 && v <= GRAPHICS_SCALE_STRETCH) screen_scale = v;
         f_close(&f);
     }
+    for (unsigned layer = 0; layer < LAYER_COUNT; layer++) randomize_layer(layer);
 }
 
 static void f_save_conf(void) {
-    f_mkdir("/GB"); // ничего не делает, если она уже есть
-    FIL f;
-    f_open(&f, "/GB/gb.conf", FA_CREATE_ALWAYS | FA_WRITE);
-    UINT br;
-    f_write(&f, &swap_ab, 1, &br);
-    f_write(&f, &manual_palette_selected, 1, &br);
-    f_write(&f, &tv_system, 1, &br);
-    f_write(&f, &screen_scale, 1, &br);
+    char pathname[96];
+    config_mkdirs();
+    config_path(pathname, sizeof pathname);
+    static char text[512];
+    int len = snprintf(text, sizeof text, "swap_ab=%u\r\ntv_system=%u\r\nscreen=%u\r\npalette_all=%u\r\n",
+                       (unsigned)swap_ab, (unsigned)tv_system, (unsigned)screen_scale, (unsigned)palette_all);
+    for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof text; i++)
+        len += snprintf(text + len, sizeof text - len, "palette%u=%u\r\ncustom%u=%06lX,%06lX,%06lX,%06lX\r\n",
+                        i, (unsigned)palette_index[i], i,
+                        (unsigned long)custom_rgb[i][0], (unsigned long)custom_rgb[i][1],
+                        (unsigned long)custom_rgb[i][2], (unsigned long)custom_rgb[i][3]);
+#if BACKPLANE
+    if (len > 0 && len < (int)sizeof text)
+        len += snprintf(text + len, sizeof text - len, "backplane=%u\r\n", (unsigned)backplane);
+#endif
+    if (len <= 0 || len >= (int)sizeof text) return;
+    static FIL f; // static: core 0 has a small stack
+    if (f_open(&f, pathname, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
+    UINT bw;
+    f_write(&f, text, (UINT)len, &bw);
     f_close(&f);
 }
 
-void menu() {
-    bool exit = false;
-    graphics_set_mode(TEXTMODE_DEFAULT);
+static void menu_frame() {
     char footer[TEXTMODE_COLS];
     snprintf(footer, TEXTMODE_COLS, ":: %s ::", PICO_PROGRAM_NAME);
     draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, 0, 11, 1);
     snprintf(footer, TEXTMODE_COLS, ":: %s build %s %s ::", PICO_PROGRAM_VERSION_STRING, __DATE__,
              __TIME__);
     draw_text(footer, TEXTMODE_COLS / 2 - strlen(footer) / 2, TEXTMODE_ROWS - 1, 11, 1);
+}
+
+/* the palettes are chosen one by one only under "Palette: CUSTOM" */
+static bool menu_item_selectable(const unsigned i) {
+    const MenuItem& item = menu_items[i];
+    if (item.type == NONE) return false;
+    for (unsigned layer = 0; layer < LAYER_COUNT; layer++)
+        if (item.value == &palette_index[layer]) return palette_all == PALETTE_CUSTOM;
+#if BACKPLANE
+    if (item.value == &backplane) return screen_scale != GRAPHICS_SCALE_STRETCH; // Full has none
+#endif
+    return true;
+}
+
+void menu() {
+    bool exit = false;
+    graphics_set_mode(TEXTMODE_DEFAULT);
+    menu_frame();
     uint current_item = 0;
     /* Only fresh presses count: the Start+Select that opened the menu must be
      * released first, so it can't change or activate the first item. */
@@ -1359,6 +2357,7 @@ void menu() {
         const uint8_t pressed = held_keys & (uint8_t)~prev_keys;
         prev_keys = held_keys;
         const bool activate = pressed & BTN_START;
+        const bool dmg = !gb.cgb.cgbMode; // the colours are for Game Boy games
 
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
             uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
@@ -1376,12 +2375,29 @@ void menu() {
                     case ARRAY:
                         if (item->max_value != 0) {
                             auto* value = (uint8_t *)item->value;
+                            const uint8_t old = *value;
                             if ((pressed & BTN_RIGHT) && *value < item->max_value) {
                                 (*value)++;
                             }
                             if ((pressed & BTN_LEFT) && *value > 0) {
                                 (*value)--;
                             }
+                            for (unsigned layer = 0; layer < LAYER_COUNT; layer++) {
+                                if (item->value != &palette_index[layer] && item->value != &palette_all)
+                                    continue;
+                                // Start on RANDOM draws new colours
+                                if (layer_selector(layer) == PALETTE_RANDOM && (old != *value || activate))
+                                    randomize_layer(layer);
+                                if (old != *value || activate)
+                                    update_palette();
+                            }
+                        }
+                        break;
+                    case PALETTE_EDITOR:
+                        if (activate && dmg) {
+                            palette_editor(true);
+                            menu_frame();
+                            prev_keys = input_held(); // the key that closed the editor
                         }
                         break;
                     case RETURN:
@@ -1409,10 +2425,27 @@ void menu() {
                     snprintf(result, TEXTMODE_COLS, item->text, *(uint8_t *)item->value);
                     break;
                 case ARRAY:
+                    if (!menu_item_selectable(i)) {
+                        // a palette that follows "Palette:" shows its selector
+                        const bool layer = item->value != &palette_all && item->max_value == PALETTE_CUSTOM;
+                        snprintf(result, TEXTMODE_COLS, item->text,
+                                 item->value_list[layer ? palette_all : *(uint8_t *)item->value]);
+                        color = 6;
+                        break;
+                    }
                     snprintf(result, TEXTMODE_COLS, item->text, item->value_list[*(uint8_t *)item->value]);
                     break;
                 case TEXT:
                     snprintf(result, TEXTMODE_COLS, item->text, item->value);
+                    break;
+                case GAME_INI:
+                    snprintf(result, TEXTMODE_COLS, "%s",
+                             game_ini_linked ? "Unlink game color file   " : "Save colors for this game");
+                    if (!dmg || !rom_file[0]) color = 6;
+                    break;
+                case PALETTE_EDITOR:
+                    snprintf(result, TEXTMODE_COLS, "%s", item->text);
+                    if (!dmg) color = 6;
                     break;
                 case NONE:
                     color = 6;
@@ -1423,39 +2456,29 @@ void menu() {
         }
 
         if (pressed & BTN_DOWN) {
-            current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
-
-            if (menu_items[current_item].type == NONE)
-                current_item++;
+            do {
+                current_item = (current_item + 1) % MENU_ITEMS_NUMBER;
+            } while (!menu_item_selectable(current_item));
         }
         if (pressed & BTN_UP) {
-            current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
-
-            if (menu_items[current_item].type == NONE)
-                current_item--;
+            do {
+                current_item = (current_item - 1 + MENU_ITEMS_NUMBER) % MENU_ITEMS_NUMBER;
+            } while (!menu_item_selectable(current_item));
         }
 
         sleep_ms(25);
     }
-    if (manual_palette_selected > 0) {
-        manual_assign_palette(palette16, manual_palette_selected);
-    } else {
-        char rom_title[16];
-        auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
-    }
-    // a Game Boy Color game keeps its own palette in slots 0..63
-    if (!gb.cgb.cgbMode)
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 4; j++) {
-                graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-                palette[i][j] = i * 4 + j;
-            }
+    palette_hotkeys_clear();
+    palette_apply();
     f_save_conf();
 #if SOFTTV
     graphics_set_tv(tv_system == 0, true); // applied by graphics_set_mode()
 #endif
 #if VGA || HDMI || SOFTTV
     graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
+#if BACKPLANE
+    apply_backplane();
 #endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
@@ -1511,13 +2534,20 @@ int main() {
 #if VGA || HDMI || SOFTTV
         graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
+#if BACKPLANE
+        apply_backplane();
+#endif
     }
 
     while (true) {
         /* ROM File selector */
         if (FR_OK == fr) {
             graphics_set_mode(TEXTMODE_DEFAULT);
+#if BACKPLANE
+            filebrowser("gbc,gb,gbbp"); // .gbbp: a backplane to install
+#else
             filebrowser("gbc,gb");
+#endif
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 
@@ -1530,22 +2560,9 @@ int main() {
             while (1) draw_text("error", 1, 1, 1, 2);
         }
 
-        /* Automatically assign a colour palette to the game */
-        if (!manual_palette_selected) {
-            char rom_title[16];
-            auto_assign_palette(palette16, gb_colour_hash(&gb), gb_get_rom_name(&gb, rom_title));
-        }
-        else {
-            manual_assign_palette(palette16, manual_palette_selected);
-        }
-
-        if (!gb.cgb.cgbMode)
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 4; j++) {
-                    graphics_set_palette(i * 4 + j, RGB565_TO_RGB888(palette16[i][j]));
-                    palette[i][j] = i * 4 + j;
-                }
-        //palette[i][j] = convertRGB565toRGB222(palette16[i][j]);
+        /* The colours of a Game Boy game: the palette saved for it, or the selected one */
+        apply_game_palette_on_load();
+        palette_hotkeys_clear();
 
         gb_init_lcd(&gb, &lcd_draw_line);
         /* Load Save File. */
@@ -1553,6 +2570,11 @@ int main() {
 
         // the Enter/Start that launched the ROM must not reach the game
         input_gate_t game_gate;
+        if (fb_menu_requested) {
+            fb_menu_requested = false;
+            menu();
+            cgb_palette_reset(); // the menu may have changed the video palette
+        }
         game_gate.arm();
 
         //=============================================================================
@@ -1625,6 +2647,9 @@ int main() {
                 }
                 save();
             }
+
+            if (handle_palette_hotkeys())
+                game_gate.arm(); // the keys that closed the palette editor
 
             //-----------------------------------------------------------------
             gb_run_frame(&gb);

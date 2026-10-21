@@ -182,6 +182,10 @@ void inline graphics_set_mode(const enum graphics_mode_t mode) {
     graphics_mode = -1;
     sleep_ms(16);
     clrScr(0);
+    /* the text buffer is not the picture buffer any more (the picture is
+     * triple buffered): the text mode starts empty */
+    if (text_buffer && mode == TEXTMODE_DEFAULT)
+        memset(text_buffer, 0, TEXTMODE_COLS * TEXTMODE_ROWS * 2);
     graphics_mode = mode;
 }
 

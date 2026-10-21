@@ -71,6 +71,24 @@ enum graphics_scale_t {
 };
 void graphics_set_scale(enum graphics_scale_t scale);
 
+/* HDMI / VGA / TV-SOFT: the Game Boy Color picture around the game (2x and
+ * 3x; Full has none).  backplane_cells: 320x240 cells of 2x2 pixels of the
+ * 640x480 screen (a TV field line is a cell row), video palette slots.
+ * TV-SOFT: 384 cells across - a PAL field line is wider than 4:3 of its 240
+ * lines (~383 cells, NTSC ~321). */
+#if SOFTTV
+#define BACKPLANE_W 384
+#else
+#define BACKPLANE_W 320
+#endif
+#define BACKPLANE_H 240
+extern uint8_t* volatile backplane_cells;
+void graphics_set_backplane(bool on, enum graphics_scale_t scale); // the built-in one
+/* a loaded one: fill backplane_buffer() with colour numbers 0..31, then show it */
+#define BACKPLANE_LOADED_COLORS 32
+uint8_t* backplane_buffer(void);
+void backplane_show_loaded(const uint8_t rgb[BACKPLANE_LOADED_COLORS * 3]);
+
 void graphics_set_palette(uint8_t i, uint32_t color);
 
 void graphics_set_textbuffer(uint8_t* buffer);
