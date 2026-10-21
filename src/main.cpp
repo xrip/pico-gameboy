@@ -964,6 +964,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 /* Where the browser was left: re-entering it opens the same directory with
  * the same entry under the cursor (e.g. the ROM that was just played). */
 static char fb_dir[256] = "\\GB";
+static bool fb_menu_requested = false; // START+SELECT in the browser
 static char fb_focus[80] = "";
 
 static void fb_remember(const char* dir, const char* name) {
@@ -1081,8 +1082,10 @@ void filebrowser(const char executables[11]) {
 
             const uint8_t keys = gate.read();
 
-            // SELECT: run the previous cartridge
-            if (keys & BTN_SELECT) {
+            // SELECT: run the previous cartridge; START+SELECT: and open the menu (as in the game)
+            if ((keys & BTN_SELECT) ||
+                (keys & BTN_START && (input_held() & (BTN_START | BTN_SELECT)) == (BTN_START | BTN_SELECT))) {
+                fb_menu_requested = (input_held() & BTN_START) != 0;
                 fb_remember(basepath, fileItems[offset + current_item].filename);
                 rom = previous_rom();
                 return;
@@ -1340,7 +1343,7 @@ static bool save() {
     config_mkdirs();
     state_path(pathname, sizeof pathname, CONFIG_DIR);
 
-    FIL fd;
+    static FIL fd; // static: core 0 has a small stack
     if (FR_OK != f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE))
         return true;
     UINT bw;
@@ -1353,7 +1356,7 @@ static bool save() {
 
 static bool load() {
     char pathname[255];
-    FIL fd;
+    static FIL fd; // static: core 0 has a small stack
     state_path(pathname, sizeof pathname, CONFIG_DIR);
     if (FR_OK != f_open(&fd, pathname, FA_READ)) {
         state_path(pathname, sizeof pathname, HOME_DIR); // saved by an older version
@@ -1376,6 +1379,12 @@ static uint8_t tv_system = 0; // 0 - PAL, 1 - NTSC
 static uint8_t screen_scale = 1;
 #else
 static uint8_t screen_scale = 0;
+#endif
+/* HDMI / VGA / TV-SOFT on RP2350: the Game Boy Color picture around the game
+ * in 2x and 3x (the cells take 75 KB of RAM - no room on RP2040) */
+#if (VGA || HDMI || SOFTTV) && PICO_RP2350
+#define BACKPLANE 1
+static uint8_t backplane = 1;
 #endif
 #ifdef TEXTMODE_COLS_MAX // text columns change at run time (TV-SOFT)
 #define TEXT_BUFFER_COLS TEXTMODE_COLS_MAX
@@ -1532,7 +1541,7 @@ static bool write_game_palette_ini() {
     if (!game_palette_ini_path(pathname, sizeof pathname)) return false;
     config_mkdirs();
 
-    char data[256];
+    static char data[256];
     int len = snprintf(data, sizeof data, "[palette]\r\n");
     for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof data; i++) {
         const uint32_t* c = layer_selector(i) == PALETTE_RANDOM ? pal_rgb[i] : custom_rgb[i];
@@ -1550,7 +1559,7 @@ static bool write_game_palette_ini() {
     }
     if (len <= 0 || len >= (int)sizeof data) return false;
 
-    FIL file;
+    static FIL file; // static: core 0 has a small stack
     if (FR_OK != f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) return false;
     UINT written = 0;
     const FRESULT fr = f_write(&file, data, (UINT)len, &written);
@@ -1572,13 +1581,14 @@ static bool load_game_palette_ini() {
     char pathname[128];
     if (!game_palette_ini_path(pathname, sizeof pathname)) return false;
 
-    FIL file;
+    static FIL file; // static: core 0 has a small stack
     if (FR_OK != f_open(&file, pathname, FA_READ)) return false;
-    char data[320] = { 0 };
+    static char data[320];
     UINT bytes_read = 0;
     const FRESULT fr = f_read(&file, data, sizeof data - 1, &bytes_read);
     f_close(&file);
     if (fr != FR_OK || bytes_read == 0) return false;
+    data[bytes_read] = '\0';
 
     uint32_t rgb[LAYER_COUNT][4];
     char* const layers = strstr(data, "[layers]");
@@ -2125,6 +2135,9 @@ const MenuItem menu_items[] = {
 #if VGA || HDMI || SOFTTV
     { "" },
     { "Screen: %s", ARRAY, &screen_scale, nullptr, 2, { "2x  ", "3x  ", "Full" } },
+#if BACKPLANE
+    { "Backplane: %s", ARRAY, &backplane, nullptr, 1, { "OFF", "ON " } },
+#endif
 #endif
     {},
 {
@@ -2143,11 +2156,11 @@ static void config_path(char* pathname, const size_t size) {
 }
 
 static void f_load_conf(void) {
-    FIL f;
+    static FIL f; // static: core 0 has a small stack
     char pathname[96];
     config_path(pathname, sizeof pathname);
     if (f_open(&f, pathname, FA_READ) == FR_OK) {
-        char text[512];
+        static char text[512];
         UINT br = 0;
         if (f_read(&f, text, sizeof text - 1, &br) != FR_OK) br = 0;
         f_close(&f);
@@ -2159,6 +2172,9 @@ static void f_load_conf(void) {
             const unsigned long d = strtoul(val, nullptr, 10);
             if (!strcmp(line, "swap_ab")) swap_ab = d ? 1 : 0;
             else if (!strcmp(line, "tv_system")) tv_system = d <= 1 ? (uint8_t)d : 0;
+#if BACKPLANE
+            else if (!strcmp(line, "backplane")) backplane = d ? 1 : 0;
+#endif
             else if (!strcmp(line, "palette_all")) palette_all = d <= PALETTE_CUSTOM ? (uint8_t)d : PALETTE_AUTO;
             else if (!strcmp(line, "screen")) screen_scale = d <= GRAPHICS_SCALE_STRETCH ? (uint8_t)d : screen_scale;
             else if (!strncmp(line, "palette", 7) || !strncmp(line, "custom", 6)) {
@@ -2188,7 +2204,7 @@ static void f_save_conf(void) {
     char pathname[96];
     config_mkdirs();
     config_path(pathname, sizeof pathname);
-    char text[512];
+    static char text[512];
     int len = snprintf(text, sizeof text, "swap_ab=%u\r\ntv_system=%u\r\nscreen=%u\r\npalette_all=%u\r\n",
                        (unsigned)swap_ab, (unsigned)tv_system, (unsigned)screen_scale, (unsigned)palette_all);
     for (unsigned i = 0; i < LAYER_COUNT && len > 0 && len < (int)sizeof text; i++)
@@ -2196,8 +2212,12 @@ static void f_save_conf(void) {
                         i, (unsigned)palette_index[i], i,
                         (unsigned long)custom_rgb[i][0], (unsigned long)custom_rgb[i][1],
                         (unsigned long)custom_rgb[i][2], (unsigned long)custom_rgb[i][3]);
+#if BACKPLANE
+    if (len > 0 && len < (int)sizeof text)
+        len += snprintf(text + len, sizeof text - len, "backplane=%u\r\n", (unsigned)backplane);
+#endif
     if (len <= 0 || len >= (int)sizeof text) return;
-    FIL f;
+    static FIL f; // static: core 0 has a small stack
     if (f_open(&f, pathname, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
     UINT bw;
     f_write(&f, text, (UINT)len, &bw);
@@ -2219,6 +2239,9 @@ static bool menu_item_selectable(const unsigned i) {
     if (item.type == NONE) return false;
     for (unsigned layer = 0; layer < LAYER_COUNT; layer++)
         if (item.value == &palette_index[layer]) return palette_all == PALETTE_CUSTOM;
+#if BACKPLANE
+    if (item.value == &backplane) return screen_scale != GRAPHICS_SCALE_STRETCH; // Full has none
+#endif
     return true;
 }
 
@@ -2306,7 +2329,9 @@ void menu() {
                 case ARRAY:
                     if (!menu_item_selectable(i)) {
                         // a palette that follows "Palette:" shows its selector
-                        snprintf(result, TEXTMODE_COLS, item->text, item->value_list[palette_all]);
+                        const bool layer = item->value != &palette_all && item->max_value == PALETTE_CUSTOM;
+                        snprintf(result, TEXTMODE_COLS, item->text,
+                                 item->value_list[layer ? palette_all : *(uint8_t *)item->value]);
                         color = 6;
                         break;
                     }
@@ -2353,6 +2378,9 @@ void menu() {
 #endif
 #if VGA || HDMI || SOFTTV
     graphics_set_scale((enum graphics_scale_t)screen_scale);
+#endif
+#if BACKPLANE
+    graphics_set_backplane(backplane, (enum graphics_scale_t)screen_scale);
 #endif
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 }
@@ -2408,6 +2436,9 @@ int main() {
 #if VGA || HDMI || SOFTTV
         graphics_set_scale((enum graphics_scale_t)screen_scale);
 #endif
+#if BACKPLANE
+        graphics_set_backplane(backplane, (enum graphics_scale_t)screen_scale);
+#endif
     }
 
     while (true) {
@@ -2437,6 +2468,11 @@ int main() {
 
         // the Enter/Start that launched the ROM must not reach the game
         input_gate_t game_gate;
+        if (fb_menu_requested) {
+            fb_menu_requested = false;
+            menu();
+            cgb_palette_reset(); // the menu may have changed the video palette
+        }
         game_gate.arm();
 
         //=============================================================================
