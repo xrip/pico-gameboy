@@ -50,35 +50,20 @@ static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
 static volatile enum graphics_scale_t graphics_scale = GRAPHICS_SCALE_3X;
 
-// source row shown on a screen line, -1 outside the picture; a table (no
-// division in the IRQ: RP2040 divides in the flash)
-static int16_t line_row[480];
-static int line_row_h = -1, line_row_scale = -1;
-
-static void line_rows_update(void) {
+// source row shown on a screen line, -1 outside the picture
+static inline int scaled_row(const int line) {
     const int h = graphics_buffer_height;
-    if (h == line_row_h && (int)graphics_scale == line_row_scale) return;
-    for (int line = 0; line < 480; line++) {
-        int r;
-        switch (graphics_scale) {
-            case GRAPHICS_SCALE_2X:
-                r = line - (480 - 2 * h) / 2;
-                line_row[line] = r < 0 || r >= 2 * h ? -1 : r / 2;
-                break;
-            case GRAPHICS_SCALE_3X:
-                r = line - (480 - 3 * h) / 2;
-                line_row[line] = r < 0 || r >= 3 * h ? -1 : r / 3;
-                break;
-            default:
-                line_row[line] = line * h / 480;
-        }
+    int r;
+    switch (graphics_scale) {
+        case GRAPHICS_SCALE_2X:
+            r = line - (N_lines_visible - 2 * h) / 2;
+            return r < 0 || r >= 2 * h ? -1 : r / 2;
+        case GRAPHICS_SCALE_3X:
+            r = line - (N_lines_visible - 3 * h) / 2;
+            return r < 0 || r >= 3 * h ? -1 : r / 3;
+        default:
+            return line < N_lines_visible ? line * h / N_lines_visible : -1;
     }
-    line_row_h = h;
-    line_row_scale = (int)graphics_scale;
-}
-
-static inline __attribute__((always_inline)) int scaled_row(const int line) {
-    return line < 480 ? line_row[line] : -1;
 }
 
 static bool is_flash_line = false;
@@ -152,37 +137,6 @@ void __time_critical_func() dma_handler_VGA() {
          * A screen line that shows the same source row as the previous one
          * keeps the previous line buffer (no new DMA address). */
         const int row = scaled_row(screen_line);
-        const uint8_t* const cells = backplane_cells;
-        if (cells) {
-            /* with the backplane a new cell row begins on every second line */
-            if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1)) return;
-            const uint8_t* bp = cells + (screen_line >> 1) * BACKPLANE_W;
-            const uint32_t p_i = (((row < 0 ? screen_line : row) & is_flash_line) + (frame_number & is_flash_frame)) & 1;
-            const uint16_t* current_palette = palette[p_i];
-            volatile uint8_t* out = (uint8_t *)*output_buffer + shift_picture; // no memset calls
-            const int w = graphics_buffer_width;
-            const int k = graphics_scale == GRAPHICS_SCALE_2X ? 2 : 3;
-            const int left = row < 0 ? BACKPLANE_W : (BACKPLANE_W - k * w / 2) / 2; // in cells
-            for (int u = 0; u < left; u++) {
-                const uint8_t c = (uint8_t)current_palette[bp[u]];
-                *out++ = c;
-                *out++ = c;
-            }
-            if (row >= 0) {
-                const uint8_t* src = input_buffer + row * w;
-                for (int x = 0; x < w; x++) {
-                    const uint8_t c = (uint8_t)current_palette[src[x]];
-                    for (int i = k; i--;) *out++ = c;
-                }
-                for (int u = BACKPLANE_W - left; u < BACKPLANE_W; u++) {
-                    const uint8_t c = (uint8_t)current_palette[bp[u]];
-                    *out++ = c;
-                    *out++ = c;
-                }
-            }
-            dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
-            return;
-        }
         if (row < 0) {
             dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false);
             return;
@@ -202,7 +156,7 @@ void __time_critical_func() dma_handler_VGA() {
 
         uint16_t* current_palette = palette[p_i];
         const uint8_t* src = input_buffer + row * w;
-        volatile uint8_t* out = dst + left; // volatile: no memset calls (in the flash)
+        uint8_t* out = dst + left;
         for (int x = 0; x < w; x++) {
             const uint8_t c = (uint8_t)current_palette[src[x]];
             for (int i = k; i--;) *out++ = c;
@@ -528,7 +482,6 @@ void graphics_set_offset(const int x, const int y) {
 
 void graphics_set_scale(enum graphics_scale_t scale) {
     graphics_scale = scale;
-    line_rows_update();
 }
 
 void graphics_set_flashmode(const bool flash_line, const bool flash_frame) {

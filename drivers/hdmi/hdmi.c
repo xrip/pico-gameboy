@@ -239,11 +239,20 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
     int scaled_row = -1;
     if (per_line) {
         const int target = line + 1;
-        scaled_row = line_row[target]; // no division here: RP2040 divides in the flash
-        const int prev_row = line_row[target - 1];
+        const int h = graphics_buffer_height;
+        int prev_row;
+        if (graphics_scale == GRAPHICS_SCALE_3X) {
+            const int top = (480 - 3 * h) / 2;
+            scaled_row = target - top;
+            prev_row = scaled_row - 1;
+            scaled_row = scaled_row < 0 || scaled_row >= 3 * h ? -1 : scaled_row / 3;
+            prev_row = prev_row < 0 || prev_row >= 3 * h ? -1 : prev_row / 3;
+        } else {
+            scaled_row = target * h / 480;
+            prev_row = (target - 1) * h / 480;
+        }
         // line 0 always draws: the buffer before it is a blanking line
-        // (the backplane changes on every second line)
-        if (line > 0 && scaled_row == prev_row && (!backplane_cells || (target & 1))) return;
+        if (line > 0 && scaled_row == prev_row) return;
     } else if ((line & 1) == 0) return;
 
     inx_buf_dma++;
@@ -256,19 +265,15 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
 
         if (per_line) {
-            // the backplane cell row of the line the buffer is shown on
-            const uint8_t* bp = backplane_cells ? backplane_cells + ((line + 1) >> 1) * BACKPLANE_W : NULL;
             if (scaled_row < 0) {
-                if (bp) irq_copy(output_buffer, bp, SCREEN_WIDTH);
-                else irq_fill(output_buffer, 255, SCREEN_WIDTH);
+                memset(output_buffer, 255, SCREEN_WIDTH);
             } else {
                 const uint8_t* src = &graphics_buffer[scaled_row * graphics_buffer_width];
                 const int w = graphics_buffer_width;
                 // 3x: 1.5 output samples per pixel (each sample is 2 physical pixels)
                 const int out_w = graphics_scale == GRAPHICS_SCALE_3X ? w * 3 / 2 : SCREEN_WIDTH;
                 const int left = (SCREEN_WIDTH - out_w) / 2;
-                if (bp) irq_copy(output_buffer, bp, left);
-                else irq_fill(output_buffer, 255, left);
+                memset(output_buffer, 255, left);
                 uint8_t* out = output_buffer + left;
                 if (graphics_scale == GRAPHICS_SCALE_3X) {
                     for (int x = 0; x + 1 < w; x += 2) {
@@ -280,16 +285,14 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
                         *out++ = b;
                     }
                 } else {
-                    const int k = stretch_k;
+                    const int k = SCREEN_WIDTH / w; // stretch: whole samples per pixel
                     for (int x = 0; x < w; x++) {
                         uint8_t c = src[x];
                         c = ((c & 0xf0) == 0xf0) ? 255 : c;
-                        irq_fill(out, c, k);
-                        out += k;
+                        for (int i = k; i--;) *out++ = c;
                     }
                 }
-                if (bp) irq_copy(out, bp + (out - output_buffer), output_buffer + SCREEN_WIDTH - out);
-                else irq_fill(out, 255, output_buffer + SCREEN_WIDTH - out);
+                memset(out, 255, output_buffer + SCREEN_WIDTH - out);
             }
         } else
         switch (graphics_mode) {
@@ -751,7 +754,6 @@ void graphics_set_offset(int x, int y) {
 
 void graphics_set_scale(enum graphics_scale_t scale) {
     graphics_scale = scale;
-    line_rows_update();
 }
 
 void graphics_set_textbuffer(uint8_t* buffer) {
