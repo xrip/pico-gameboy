@@ -220,6 +220,17 @@ static void line_rows_update(void) {
     line_row_scale = (int)graphics_scale;
 }
 
+static const uint8_t* volatile hmix_table = NULL; // graphics_set_hmix()
+static const uint8_t* hmix_base = NULL;
+
+void graphics_set_hmix(const uint8_t* mix12, const uint8_t* base) {
+    hmix_table = NULL;
+    if (!mix12 || !base) return;
+    hmix_base = base;
+    __dmb(); // the IRQ uses base only after it sees the table
+    hmix_table = mix12;
+}
+
 static void __not_in_flash_func(pal_flush)(void) {
     if (!pal_dirty_any) return;
     pal_dirty_any = false;
@@ -329,12 +340,19 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
                     }
                 }
                 else if (graphics_scale == GRAPHICS_SCALE_3X) {
+                    const uint8_t* const mix = hmix_table;
+                    const uint8_t* const base = hmix_base;
                     for (int x = 0; x + 1 < w; x += 2) {
-                        uint8_t a = src[x], b = src[x + 1];
-                        a = ((a & 0xf0) == 0xf0) ? 255 : a;
-                        b = ((b & 0xf0) == 0xf0) ? 255 : b;
+                        const uint8_t sa = src[x], sb = src[x + 1];
+                        const uint8_t a = ((sa & 0xf0) == 0xf0) ? 255 : sa;
+                        const uint8_t b = ((sb & 0xf0) == 0xf0) ? 255 : sb;
+                        uint8_t m = a; // the sample shared by the two pixels
+                        if (mix && sa != sb) {
+                            const uint8_t ba = base[sa], bb = base[sb];
+                            if ((ba | bb) < 12) m = mix[ba * 12 + bb];
+                        }
                         *out++ = a;
-                        *out++ = a;
+                        *out++ = m;
                         *out++ = b;
                     }
                 } else {

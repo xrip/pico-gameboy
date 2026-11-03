@@ -519,12 +519,20 @@ static constexpr uint8_t DMG_SLOTS = 12;
 static uint8_t blend_slot[DMG_SLOTS][DMG_SLOTS]; // [previous][current]
 static uint8_t blend_prev[LCD_HEIGHT][LCD_WIDTH / 2]; // the previous frame, slots 0..11 (4 bits each)
 
+/* the current colour (base slot 0..11) of every slot: a ghosting slot
+ * (previous, current) is its current colour; 0xFF - not a DMG colour */
+static uint8_t slot_base[256];
+
 static void blend_slots_init() {
     uint8_t next = DMG_SLOTS;
     for (uint8_t a = 0; a < DMG_SLOTS; a++) {
         for (uint8_t b = 0; b < DMG_SLOTS; b++)
             blend_slot[a][b] = a == b ? a : next++;
     }
+    memset(slot_base, 0xFF, sizeof slot_base);
+    for (uint8_t a = 0; a < DMG_SLOTS; a++)
+        for (uint8_t b = 0; b < DMG_SLOTS; b++)
+            slot_base[blend_slot[a][b]] = b;
 }
 
 #if VGA || HDMI || SOFTTV
@@ -2229,6 +2237,9 @@ static uint32_t rgb565_to_rgb888(const uint16_t c) {
  * the LCD ghosting 12..143); a Game Boy Color game keeps its own palette in
  * slots 0..191 */
 static void palette_apply() {
+#if HDMI
+    graphics_set_hmix(nullptr, nullptr); // a Game Boy Color game has no mixes
+#endif
     if (gb.cgb.cgbMode) return;
     uint32_t rgb[DMG_SLOTS];
     for (int i = 0; i < LAYER_COUNT; i++)
@@ -2249,6 +2260,10 @@ static void palette_apply() {
             const uint32_t bl = ((rgb[a] & 0xFF) + (rgb[b] & 0xFF) + 1) / 2;
             graphics_set_palette(blend_slot[a][b], RGB888(r, g, bl));
         }
+#if HDMI
+    // the slots 12..143 hold the 1:1 mixes now: HDMI 3x uses them between pixels
+    graphics_set_hmix(&blend_slot[0][0], slot_base);
+#endif
 }
 
 /* The sixteen shades are indexed as current DMG shade * 4 + old shade.
@@ -2260,6 +2275,9 @@ static void palette_apply() {
 static void palette16_apply() {
     if (gb.cgb.cgbMode || palette16_select == 0 || palette16_select > PALETTE16_CUSTOM)
         return;
+#if HDMI
+    graphics_set_hmix(nullptr, nullptr); // the slots 12..143 are transitions here, not mixes
+#endif
     const uint32_t* const rgb = palette16_select == PALETTE16_CUSTOM ?
         custom_shades16 : gb_palettes16[palette16_select - 1];
     for (unsigned layer = 0; layer < LAYER_COUNT; layer++)
@@ -3331,6 +3349,9 @@ static void game_video_reset() {
     memset(SCREEN_2, 0, sizeof SCREEN_2);
     memset(frame_sets, 0, sizeof frame_sets);
     memset(blend_prev, 0, sizeof blend_prev);
+#if HDMI
+    graphics_set_hmix(nullptr, nullptr); // until the palette of the new game
+#endif
     // colour 0 is black until the new game's palette is in place
     graphics_set_palette(0, RGB888(0, 0, 0));
     graphics_set_buffer((uint8_t *)frames[frame_front], LCD_WIDTH, LCD_HEIGHT);
