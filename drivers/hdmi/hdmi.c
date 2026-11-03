@@ -75,6 +75,17 @@ static uint32_t irq_inx = 0;
 //функции и константы HDMI
 
 #define BASE_HDMI_CTRL_INX (240)
+
+/* A colour of conv_color is two 64-bit TMDS words, each stored as two 32-bit
+ * writes.  The DMA reads them for every pixel of that colour: a palette
+ * write during the picture could send half a new and half an old word, i.e.
+ * random TMDS symbols, among them the control (sync) ones - the monitor lost
+ * the picture (palette hotkeys, a new game).  graphics_set_palette() only
+ * prepares the words; the scanline IRQ copies them in the vertical blank,
+ * where the lines on the wire use the sync colours 240..243 only. */
+static uint64_t pal_tmds[256][2];
+static volatile uint8_t pal_dirty[256];
+static volatile bool pal_dirty_any = false;
 //программа конвертации адреса
 
 uint16_t pio_program_instructions_conv_HDMI[] = {
@@ -209,6 +220,20 @@ static void line_rows_update(void) {
     line_row_scale = (int)graphics_scale;
 }
 
+static void __not_in_flash_func(pal_flush)(void) {
+    if (!pal_dirty_any) return;
+    pal_dirty_any = false;
+    __dmb();
+    uint64_t* const conv_color64 = (uint64_t *)conv_color;
+    for (int i = 0; i < 256; i++) {
+        if (!pal_dirty[i]) continue;
+        pal_dirty[i] = 0;
+        __dmb(); // a new write after this sets the flag again: copied next time
+        conv_color64[i * 2] = pal_tmds[i][0];
+        conv_color64[i * 2 + 1] = pal_tmds[i][1];
+    }
+}
+
 /* in RAM, not in SCRATCH_Y: SCRATCH_Y is the stack of core 0, and code there
  * leaves the stack too little room (it grew into this handler) */
 static void __not_in_flash_func(dma_handler_HDMI)() {
@@ -227,6 +252,9 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
 
     line = line >= 524 ? 0 : line + 1;
     if (line == 480) graphics_frame_count++; // the vertical blank begins
+    /* the line on the wire now was filled two or three IRQs ago: from 485 on
+     * it is a blanking line (sync colours only) */
+    if (line >= 485) pal_flush();
 
     /* t: the active screen line (0..479) the buffer filled now is shown on,
      * the same for every mode: 2x and the text mode fill on the odd lines,
@@ -522,6 +550,7 @@ static inline bool hdmi_init() {
 
     //255 - цвет фона
     graphics_set_palette(255, palette[255]);
+    pal_flush(); // the DMA is stopped here: straight into conv_color
 
 
     //240-243 служебные данные(синхра) напрямую вносим в массив -конвертер
@@ -730,12 +759,15 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
 
     if ((i >= BASE_HDMI_CTRL_INX) && (i != 255)) return; //не записываем "служебные" цвета
 
-    uint64_t* conv_color64 = (uint64_t *)conv_color;
     const uint8_t R = (color888 >> 16) & 0xff;
     const uint8_t G = (color888 >> 8) & 0xff;
     const uint8_t B = (color888 >> 0) & 0xff;
-    conv_color64[i * 2] = get_ser_diff_data(tmds_encoder(R), tmds_encoder(G), tmds_encoder(B));
-    conv_color64[i * 2 + 1] = conv_color64[i * 2] ^ 0x0003ffffffffffffl;
+    const uint64_t tmds = get_ser_diff_data(tmds_encoder(R), tmds_encoder(G), tmds_encoder(B));
+    pal_tmds[i][0] = tmds;
+    pal_tmds[i][1] = tmds ^ 0x0003ffffffffffffl;
+    __dmb(); // the words before the flag: pal_flush() copies them in the blank
+    pal_dirty[i] = 1;
+    pal_dirty_any = true;
 };
 
 void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height) {
