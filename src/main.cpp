@@ -1695,17 +1695,32 @@ static uint16_t frequencies[] = { CPU_FREQ, 396, 404, 408, 412, 416, 420, 424, 4
 #endif
 static uint8_t frequency_index = 0;
 
+#if PICO_RP2350
+/* QMI M0 (the flash) timing for clk_sys = clock_hz: the flash clock stays at
+ * most 145 MHz (378 / 3 = 126, as before; 504 / 4 = 126) and RXDELAY = CLKDIV
+ * keeps the same sampling delay in ns.  The fixed 0x60007303 (CLKDIV 3) ran
+ * the flash at 168 MHz at 504 MHz: a black screen. */
+static uint32_t flash_timing_for(const uint32_t clock_hz) {
+    const uint32_t max_flash_hz = 145u * 1000000u;
+    uint32_t divisor = (clock_hz + max_flash_hz - 1u) / max_flash_hz;
+    if (divisor < 2u) divisor = 2u;
+    return 0x60007000u | divisor << QMI_M0_TIMING_RXDELAY_LSB | divisor << QMI_M0_TIMING_CLKDIV_LSB;
+}
+#endif
+
 bool overclock() {
 #if PICO_RP2350
-    volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
+    const uint32_t target_hz = frequencies[frequency_index] * MHZ;
+    const bool faster = target_hz > clock_get_hz(clk_sys);
     vreg_disable_voltage_limit();
     vreg_set_voltage(CPU_FREQ > 378 ? VREG_VOLTAGE_1_70 : VREG_VOLTAGE_1_60);
     sleep_ms(10);
-    *qmi_m0_timing = 0x60007204;
-    set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);
-    *qmi_m0_timing = 0x60007303;
+    // the slower of the two timings while the clock changes
+    if (faster) qmi_hw->m[0].timing = flash_timing_for(target_hz);
+    const bool res = set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);
+    qmi_hw->m[0].timing = flash_timing_for(clock_get_hz(clk_sys));
     gb_psram_reclock(); // QMI CS1 timing depends on clk_sys (no-op without PSRAM)
-    return true;
+    return res;
 #else
     hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
     sleep_ms(33);
@@ -2884,7 +2899,11 @@ const MenuItem menu_items[] = {
     {},
 {
     "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
+#if CPU_FREQ >= 504
+    { FREQ_STR(CPU_FREQ), "528" }
+#else
     { FREQ_STR(CPU_FREQ), "396", "404", "408", "412", "416", "420", "424", "432" }
+#endif
 },
 { "Press START / Enter to apply", NONE },
     { "Start Demo", START_DEMO },

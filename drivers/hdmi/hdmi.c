@@ -58,13 +58,15 @@ static int dma_chan_pal_conv;
 
 //DMA буферы
 //основные строчные данные
-static uint32_t* __scratch_y("hdmi_ptr_3") dma_lines[2] = { NULL,NULL };
-static uint32_t* __scratch_y("hdmi_ptr_4") DMA_BUF_ADDR[2];
+/* three line buffers: the one being sent, the one already chosen for the
+ * next line and the one being filled (see dma_handler_HDMI) */
+static uint32_t* __scratch_y("hdmi_ptr_3") dma_lines[3] = { NULL, NULL, NULL };
+static uint32_t* __scratch_y("hdmi_ptr_4") DMA_BUF_ADDR[3];
 
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
 static alignas(4096)
-uint32_t conv_color[1224];
+uint32_t conv_color[1324];
 
 
 //индекс, проверяющий зависание
@@ -215,47 +217,51 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
     irq_inx++;
 
     dma_hw->ints0 = 1u << dma_chan_ctrl;
-    dma_channel_set_read_addr(dma_chan_ctrl, &DMA_BUF_ADDR[inx_buf_dma & 1], false);
+    /* The IRQ comes when the data channel has just started sending a line
+     * buffer.  The address set here is taken at the end of that line, so a
+     * buffer filled now is sent two lines later.  Three buffers: the one
+     * being sent, the one chosen for the next line, the one filled now; with
+     * two, a fill on two lines in a row (3x row change after a grey or
+     * backplane line, the OSD) overwrote the buffer on the wire. */
+    dma_channel_set_read_addr(dma_chan_ctrl, &DMA_BUF_ADDR[inx_buf_dma], false);
 
     line = line >= 524 ? 0 : line + 1;
     if (line == 480) graphics_frame_count++; // the vertical blank begins
 
-    /* 2x and the text mode change the line buffer on every second physical
-     * line.  3x and the stretched picture need single physical lines: the
-     * buffer filled now is shown from the next line, so it is prepared for
-     * line + 1, and kept (no inx_buf_dma++) while the source row repeats. */
-    /* (the blanking lines keep the usual every-second-line rhythm) */
-    /* The HDMI DMA line filled now is displayed on physical line+1.
-     * The OSD starts at line 456 and covers the final 24 active lines,
-     * independently of the game image's 2x/3x/Full scaling. */
+    /* t: the active screen line (0..479) the buffer filled now is shown on,
+     * the same for every mode: 2x and the text mode fill on the odd lines,
+     * a buffer for t and t + 1.  3x and the stretched picture fill single
+     * lines, only where the source row (or the grey / backplane line)
+     * changes; before, they used line + 1, so the active area had 481 lines
+     * (the monitor could lose the picture). */
+    const int t = (int)line - 1;
+    const bool active = t >= 0 && t < 480;
     const bool overlay_row = overlay_enabled && graphics_mode == GRAPHICSMODE_DEFAULT &&
-                             line < 480 && line + 1 >= OVERLAY_BAR_Y * 2;
+                             active && t >= OVERLAY_BAR_Y * 2;
     const bool gray_h = graphics_scale != GRAPHICS_SCALE_STRETCH && (gray_lines & GRAPHICS_GRAY_HORIZONTAL);
     const bool per_line = graphics_mode == GRAPHICSMODE_DEFAULT &&
-                          (graphics_scale != GRAPHICS_SCALE_2X || gray_h) && line < 479 && !overlay_row;
+                          (graphics_scale != GRAPHICS_SCALE_2X || gray_h) && active && !overlay_row;
     int scaled_row = -1;
     bool gray_row = false; // the last screen line of a buffer row: grey
     if (per_line) {
-        const int target = line + 1;
-        scaled_row = line_row[target]; // no division here: RP2040 divides in the flash
-        const int prev_row = line_row[target - 1];
-        gray_row = gray_h && scaled_row >= 0 && (target + 1 >= 480 || line_row[target + 1] != scaled_row);
-        // line 0 always draws: the buffer before it is a blanking line
+        scaled_row = line_row[t]; // no division here: RP2040 divides in the flash
+        gray_row = gray_h && scaled_row >= 0 && (t + 1 >= 480 || line_row[t + 1] != scaled_row);
+        // t = 0 always draws: the buffer before it is a blanking line
         // (the backplane changes on every second line)
-        if (line > 0 && scaled_row == prev_row && (!backplane_cells || (target & 1)) && !gray_row) return;
+        if (t > 0 && scaled_row == line_row[t - 1] && (!backplane_cells || (t & 1)) && !gray_row) return;
     } else if (!overlay_row && (line & 1) == 0) return;
 
-    inx_buf_dma++;
+    inx_buf_dma = inx_buf_dma >= 2 ? 0 : inx_buf_dma + 1;
 
 
-    uint8_t* activ_buf = (uint8_t *)dma_lines[inx_buf_dma & 1];
+    uint8_t* activ_buf = (uint8_t *)dma_lines[inx_buf_dma];
 
-    if (graphics_buffer && line < 480 ) {
+    if (graphics_buffer && line <= 480) { // line 480 (t = 479) fills only per line / OSD
         //область изображения
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
 
         if (overlay_row) {
-            const int y = (line + 1) >> 1;
+            const int y = t >> 1;
             fast_memset(output_buffer, GRAPHICS_OSD_BG, SCREEN_WIDTH);
             if (y >= OVERLAY_TEXT_Y && y < OVERLAY_TEXT_Y + 8) {
                 const uint8_t index = overlay_text_index;
@@ -270,7 +276,7 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
             }
         } else if (per_line) {
             // the backplane cell row of the line the buffer is shown on
-            const uint8_t* bp = backplane_cells ? backplane_cells + ((line + 1) >> 1) * BACKPLANE_W : NULL;
+            const uint8_t* bp = backplane_cells ? backplane_cells + (t >> 1) * BACKPLANE_W : NULL;
             if (scaled_row < 0) {
                 if (bp) fast_memcpy(output_buffer, bp, SCREEN_WIDTH);
                 else fast_memset(output_buffer, 255, SCREEN_WIDTH);
@@ -590,6 +596,7 @@ static inline bool hdmi_init() {
     //настройки DMA
     dma_lines[0] = &conv_color[1024];
     dma_lines[1] = &conv_color[1124];
+    dma_lines[2] = &conv_color[1224];
 
     //основной рабочий канал
     dma_channel_config cfg_dma = dma_channel_get_default_config(dma_chan);
@@ -624,6 +631,7 @@ static inline bool hdmi_init() {
 
     DMA_BUF_ADDR[0] = &dma_lines[0][0];
     DMA_BUF_ADDR[1] = &dma_lines[1][0];
+    DMA_BUF_ADDR[2] = &dma_lines[2][0];
 
     dma_channel_configure(
         dma_chan_ctrl,
