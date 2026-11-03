@@ -37,7 +37,7 @@ include(pico_sdk_import.cmake)
 project(gameboy-color C CXX ASM)
 # one place for the version: menu footer (PICO_PROGRAM_VERSION_STRING),
 # binary info and the output file name
-set(PICO_GAMEBOY_VERSION "3.2.4")
+set(PICO_GAMEBOY_VERSION "3.2.5")
 SET(BUILD_NAME "${PROJECT_NAME}")
 
 option(I2S "Enable I2S sound" OFF)
@@ -62,7 +62,7 @@ set(HDMI ON)
 #set(TV ON)
 #set(SOFTTV ON)
 set(USB_HID ON)
-set(CPU_FREQ 378)
+set(CPU_FREQ 252)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)

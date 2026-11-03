@@ -158,6 +158,17 @@ static bool update_freq(struct chan *c, uint32_t *pos)
 	}
 }
 
+/* The part of an output sample between two steps of a channel is weighted
+ * by its length (a box filter): acc += box_part(c, pos - prev_pos) * value,
+ * the sample is acc / box_whole(c).  Before, the parts were divided by the
+ * whole sample in integers, i.e. dropped: the output was the value at the
+ * end of the sample, and a tone above the sample rate came out as a loud
+ * alias.  The shift keeps acc in 32 bits (freq_inc is up to ~2^25). */
+static unsigned box_shift(const struct chan *c)
+{
+	return c->freq_inc >= (1u << 22) ? 8u : c->freq_inc >= (1u << 16) ? 4u : 0u;
+}
+
 static void update_sweep(struct chan *c)
 {
 	c->sweep.counter += c->sweep.inc;
@@ -205,23 +216,38 @@ static void update_square(int16_t* samples, const bool ch2, const uint_fast16_t 
 		if (!ch2)
 			update_sweep(c);
 
-		uint32_t pos = 0;
-		uint32_t prev_pos = 0;
-		int32_t sample = 0;
+		int32_t sample;
 
-		while (update_freq(c, &pos)) {
-			c->square.duty_counter = (c->square.duty_counter + 1) & 7;
-			sample += ((pos - prev_pos) / c->freq_inc) * c->val;
-			c->val = (c->square.duty & (1 << c->square.duty_counter)) ?
-				VOL_INIT_MAX / MAX_CHAN_VOLUME :
-				VOL_INIT_MIN / MAX_CHAN_VOLUME;
-			prev_pos = pos;
+		if (2048 - c->freq < 6) {
+			/* above 21 kHz (131072 / (2048 - x)): no tone on a Game Boy, only
+			 * the mean level of the duty cycle.  Games play PCM with it by
+			 * changing the volume (Gauntlet II: x = 2047, 131 kHz). */
+			unsigned high = 0;
+			for (unsigned b = 0; b < 8; b++)
+				high += (c->square.duty >> b) & 1;
+			sample = ((int32_t)high * (VOL_INIT_MAX / MAX_CHAN_VOLUME) +
+				  (int32_t)(8 - high) * (VOL_INIT_MIN / MAX_CHAN_VOLUME)) / 8;
+		} else {
+			const unsigned sh = box_shift(c);
+			uint32_t pos = 0;
+			uint32_t prev_pos = 0;
+			int32_t acc = 0;
+
+			while (update_freq(c, &pos)) {
+				c->square.duty_counter = (c->square.duty_counter + 1) & 7;
+				acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
+				c->val = (c->square.duty & (1 << c->square.duty_counter)) ?
+					VOL_INIT_MAX / MAX_CHAN_VOLUME :
+					VOL_INIT_MIN / MAX_CHAN_VOLUME;
+				prev_pos = pos;
+			}
+			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+			sample = acc / (int32_t)(c->freq_inc >> sh);
 		}
 
 		if (c->muted)
 			continue;
 
-		sample += c->val;
 		sample *= c->volume;
 		sample /= 4;
 
@@ -262,21 +288,25 @@ static void update_wave(int16_t *samples, const uint_fast16_t sample_count)
 		if (!c->enabled)
 			continue;
 
+		const unsigned sh = box_shift(c);
 		uint32_t pos      = 0;
 		uint32_t prev_pos = 0;
-		int32_t sample   = 0;
+		int32_t acc      = 0;
+		int32_t sample;
 
 		c->wave.sample = wave_sample(c->val, c->volume);
 
 		while (update_freq(c, &pos)) {
 			c->val = (c->val + 1) & 31;
-			sample += ((pos - prev_pos) / c->freq_inc) *
+			acc += (int32_t)((pos - prev_pos) >> sh) *
 				((int)c->wave.sample - 8) * (INT16_MAX/64);
 			c->wave.sample = wave_sample(c->val, c->volume);
 			prev_pos  = pos;
 		}
 
-		sample += ((int)c->wave.sample - 8) * (int)(INT16_MAX/64);
+		acc += (int32_t)((c->freq_inc - prev_pos) >> sh) *
+			((int)c->wave.sample - 8) * (INT16_MAX/64);
+		sample = acc / (int32_t)(c->freq_inc >> sh);
 
 		if (c->volume == 0)
 			continue;
@@ -325,11 +355,14 @@ static void update_noise(int16_t *samples, const uint_fast16_t sample_count)
 
 		update_env(c);
 
+		const unsigned sh = box_shift(c);
 		uint32_t pos      = 0;
 		uint32_t prev_pos = 0;
-		int32_t sample    = 0;
+		int32_t acc       = 0;
+		int32_t sample;
 
 		while (update_freq(c, &pos)) {
+			acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
 			c->noise.lfsr_reg = (c->noise.lfsr_reg << 1) |
 				(c->val >= VOL_INIT_MAX/MAX_CHAN_VOLUME);
 
@@ -345,14 +378,14 @@ static void update_noise(int16_t *samples, const uint_fast16_t sample_count)
 					VOL_INIT_MIN / MAX_CHAN_VOLUME;
 			}
 
-			sample += ((pos - prev_pos) / c->freq_inc) * c->val;
 			prev_pos = pos;
 		}
+		acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+		sample = acc / (int32_t)(c->freq_inc >> sh);
 
 		if (c->muted)
 			continue;
 
-		sample += c->val;
 		sample *= c->volume;
 		sample /= 4;
 
