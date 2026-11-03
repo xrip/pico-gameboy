@@ -198,12 +198,14 @@
 /** LCD characteristics **/
 /* PPU cycles through modes every 456 cycles. */
 #define LCD_LINE_CYCLES     456
-/* Mode 0 starts on cycle 372. */
-#define LCD_MODE_0_CYCLES   372
-/* Mode 2 starts on cycle 204. */
-#define LCD_MODE_2_CYCLES   204
-/* Mode 3 starts on cycle 284. */
-#define LCD_MODE_3_CYCLES   284
+/* A visible line, as on the hardware: mode 2 (OAM search) from cycle 0,
+ * mode 3 (transfer) from 80, mode 0 (HBlank) from 252 to the end.  The line is
+ * drawn at the end of mode 3, so register writes up to then still apply to
+ * it.  Before, the line began with HBlank (0..204, then 2 and 3): a game
+ * that waits for LY and then for the next HBlank lost one HBlank per line
+ * (Mr. Nutz: its VRAM copy no longer fitted the frame, half speed). */
+#define LCD_MODE_3_CYCLES   80
+#define LCD_MODE_0_CYCLES   252
 /* There are 154 scanlines. LY < 154. */
 #define LCD_VERT_LINES      154
 #define LCD_WIDTH           160
@@ -2137,25 +2139,19 @@ static uint_fast16_t __gb_halt_cycles(struct gb_s *gb)
 		/* If LCD is in HBlank, calculate the number of cycles
 		 * until the end of HBlank and the start of mode 2 or
 		 * mode 1. */
-		if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_HBLANK)
-		{
-			lcd_cycles = LCD_MODE_2_CYCLES -
-				     gb->counter.lcd_count;
-		}
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM)
+		if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM)
 		{
 			lcd_cycles = LCD_MODE_3_CYCLES -
 				gb->counter.lcd_count;
 		}
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER &&
-				gb->counter.lcd_count < LCD_MODE_0_CYCLES)
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER)
 		{
 			lcd_cycles = LCD_MODE_0_CYCLES -
 				gb->counter.lcd_count;
 		}
 		else
 		{
-			/* VBlank, or the end of a drawn line */
+			/* HBlank (to the next line) or VBlank */
 			lcd_cycles =
 				LCD_LINE_CYCLES - gb->counter.lcd_count;
 		}
@@ -3883,7 +3879,37 @@ void __gb_step_cpu(struct gb_s *gb)
 				}
 
 				gb->hram_io[IO_STAT] =
-					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_HBLANK;
+					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_OAM;
+
+				if(gb->hram_io[IO_STAT] & STAT_MODE_2_INTR)
+					gb->hram_io[IO_IF] |= LCDC_INTR;
+
+				/* If halted immediately jump to next LCD mode. */
+				if(gb->counter.lcd_count < LCD_MODE_3_CYCLES)
+					inst_cycles = LCD_MODE_3_CYCLES - gb->counter.lcd_count;
+			}
+		}
+		/* Transfer */
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM &&
+				gb->counter.lcd_count >= LCD_MODE_3_CYCLES)
+		{
+			gb->hram_io[IO_STAT] =
+				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_TRANSFER;
+
+			/* If halted immediately jump to next LCD mode. */
+			if (gb->counter.lcd_count < LCD_MODE_0_CYCLES)
+				inst_cycles = LCD_MODE_0_CYCLES - gb->counter.lcd_count;
+		}
+		/* Update LCD, HBlank */
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER &&
+				gb->counter.lcd_count >= LCD_MODE_0_CYCLES)
+		{
+#if ENABLE_LCD
+			if(!gb->lcd_blank)
+				__gb_draw_line(gb);
+#endif
+			gb->hram_io[IO_STAT] =
+				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_HBLANK;
 
 #if PEANUT_FULL_GBC_SUPPORT
 				//DMA GBC
@@ -3899,41 +3925,11 @@ void __gb_step_cpu(struct gb_s *gb)
 					if(!(--gb->cgb.dmaSize)) gb->cgb.dmaActive = 1;
 				}
 #endif
-				if(gb->hram_io[IO_STAT] & STAT_MODE_0_INTR)
-					gb->hram_io[IO_IF] |= LCDC_INTR;
-
-				/* If halted immediately jump to next LCD mode. */
-				if(gb->counter.lcd_count < LCD_MODE_2_CYCLES)
-					inst_cycles = LCD_MODE_2_CYCLES - gb->counter.lcd_count;
-			}
-		}
-		/* OAM access */
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_HBLANK &&
-				gb->counter.lcd_count >= LCD_MODE_2_CYCLES)
-		{
-			gb->hram_io[IO_STAT] =
-				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_OAM;
-
-			if(gb->hram_io[IO_STAT] & STAT_MODE_2_INTR)
+			if(gb->hram_io[IO_STAT] & STAT_MODE_0_INTR)
 				gb->hram_io[IO_IF] |= LCDC_INTR;
 
-			/* If halted immediately jump to next LCD mode. */
-			if (gb->counter.lcd_count < LCD_MODE_3_CYCLES)
-				inst_cycles = LCD_MODE_3_CYCLES - gb->counter.lcd_count;
-		}
-		/* Update LCD */
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM &&
-				gb->counter.lcd_count >= LCD_MODE_3_CYCLES)
-		{
-			gb->hram_io[IO_STAT] =
-				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_TRANSFER;
-#if ENABLE_LCD
-			if(!gb->lcd_blank)
-				__gb_draw_line(gb);
-#endif
-			/* If halted immediately jump to next LCD mode. */
-			if (gb->counter.lcd_count < LCD_MODE_0_CYCLES)
-				inst_cycles = LCD_MODE_0_CYCLES - gb->counter.lcd_count;
+			/* If halted immediately jump to the next line. */
+			inst_cycles = LCD_LINE_CYCLES - gb->counter.lcd_count;
 		}
 	} while(gb->gb_halt && (gb->hram_io[IO_IF] & gb->hram_io[IO_IE]) == 0);
 	/* If halted, loop until an interrupt occurs. */
