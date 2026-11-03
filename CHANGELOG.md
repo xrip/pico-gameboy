@@ -1,4 +1,5 @@
 # Unreleased
+- F10 cycles game -> ROM browser -> settings -> game (without a game: browser -> settings -> browser)
 - 30 Super Game Boy palettes from lospec.com after DMG; the palette numbers in config.ini and the game .ini files of older versions are moved up
 - palette file import: .hex files too, 4 colours go to all three CUSTOM palettes
 - gray lines between the pixels (the LCD grid), 2x and 3x: VGA - vertical, horizontal or both, HDMI - horizontal; Gray level 0..3

@@ -73,7 +73,7 @@ Emulator shortcuts in a game:
 | F8 | save the colours shown now for this game |
 | F9 | all palettes back to AUTO |
 | F12 | palette editor |
-| F10 | open / close the cartridge browser |
+| F10 | the cartridge browser; F10 there — the settings, F10 again — back to the game |
 | Ctrl+Alt+Delete | reset the board |
 
 ### NES gamepad
@@ -91,7 +91,7 @@ A — A, B — B, Start — START, Select — SELECT, Start+Select — menu.
 | B (X) | Demo mode for this directory |
 | R | record the input of the selected cartridge |
 | P | play the recording of the selected cartridge |
-| F10 | return to the running game |
+| F10 | the settings (then F10 — back to the running game, or to the browser without one) |
 | START + SELECT | settings |
 
 Selecting a `.gbbp` file installs it as the backplane (see below).

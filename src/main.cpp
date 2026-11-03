@@ -306,7 +306,7 @@ static volatile bool palette_shuffle_requested_no_save = false; // F6: generate 
 static volatile bool palette_save_requested = false;            // F8
 static volatile bool palette_default_requested = false;         // F9
 static volatile bool palette_editor_requested = false;          // F12
-static volatile bool filebrowser_toggle_requested = false;     // F10: browser / return
+static volatile bool filebrowser_toggle_requested = false;     // F10: game -> browser -> settings -> game
 
 /* R / P in the ROM browser arm a recording or its playback for the selected
  * cartridge.  Keyboard reports are produced on core 1. */
@@ -1198,6 +1198,7 @@ static bool fb_menu_requested = false; // START+SELECT in the browser
 static char fb_focus[80] = "";
 static bool fb_can_cancel = false;    // browser entered from a running game
 static bool fb_canceled = false;      // F10 closed browser: resume same GB context
+static bool fb_f10_menu = false;      // ... after the settings menu (F10 cycle)
 static bool fb_rom_ready = false;     // selected ROM / previous ROM, not Demo
 
 static void fb_remember(const char* dir, const char* name) {
@@ -1356,10 +1357,10 @@ void filebrowser(const char* executables) {
             draw_text("P", off++, 29, 7, 0);
             draw_text(" PLAY ", off, 29, 0, 3); off += 6;
         }
-        if (fb_can_cancel && off + 11 <= TEXTMODE_COLS) {
+        if (off + 10 <= TEXTMODE_COLS) { // F10: the settings (the F10 cycle)
             off++;
             draw_text("F10", off, 29, 7, 0); off += 3;
-            draw_text(" Return ", off, 29, 0, 3);
+            draw_text(" Menu ", off, 29, 0, 3);
         }
 #endif
 
@@ -1435,14 +1436,20 @@ void filebrowser(const char* executables) {
                 }
             }
 
+            /* F10 cycles game -> browser -> settings -> game; without a
+             * running game: browser -> settings -> browser. */
             if (filebrowser_toggle_requested) {
                 filebrowser_toggle_requested = false;
+                fb_remember(basepath, total_files ? fileItems[offset + current_item].filename : "");
+                replay_browser_active = false;
                 if (fb_can_cancel) {
-                    fb_remember(basepath, total_files ? fileItems[offset + current_item].filename : "");
-                    fb_canceled = true;
-                    replay_browser_active = false;
-                    return;
+                    fb_canceled = true; // the game goes on after the menu
+                    fb_f10_menu = true;
+                } else {
+                    fb_menu_requested = true;
+                    fb_rom_ready = false;
                 }
+                return;
             }
 
             // B starts Demo; the browser never tries to boot a ROM itself.
@@ -3111,7 +3118,12 @@ void menu() {
      * released first, so it can't change or activate the first item. */
     uint8_t prev_keys = input_held();
 
+    filebrowser_toggle_requested = false; // a press before the menu was drawn
     while (!exit) {
+        if (filebrowser_toggle_requested) { // F10: the next step of the cycle (the game or the browser)
+            filebrowser_toggle_requested = false;
+            break;
+        }
         const uint8_t held_keys = input_held();
         const uint8_t pressed = held_keys & (uint8_t)~prev_keys;
         prev_keys = held_keys;
@@ -3163,6 +3175,7 @@ void menu() {
                             palette_editor(true);
                             menu_frame();
                             prev_keys = input_held(); // the key that closed the editor
+                            filebrowser_toggle_requested = false; // F10 there is not the cycle
                         }
                         break;
                     case RETURN:
@@ -3498,6 +3511,12 @@ int main() {
                 }
                 if (fb_canceled) {
                     fb_canceled = false;
+                    if (fb_f10_menu) { // F10 in the browser: the settings, then the game
+                        fb_f10_menu = false;
+                        menu();
+                        cgb_palette_reset(); // the menu may have changed the video palette
+                        if (restart) break;  // Start Demo / another ROM from the menu
+                    }
                     demo_active = was_demo;
                     demo_advance_pending = pending_demo;
                     if (was_demo && demo_game_started_at)
