@@ -1688,14 +1688,18 @@ static int save_slot = 0;
 #endif
 #define FREQ_STR_(x) #x
 #define FREQ_STR(x) FREQ_STR_(x)
+#if CPU_FREQ >= 504
+static uint16_t frequencies[] = { CPU_FREQ, 528 };
+#else
 static uint16_t frequencies[] = { CPU_FREQ, 396, 404, 408, 412, 416, 420, 424, 433 };
+#endif
 static uint8_t frequency_index = 0;
 
 bool overclock() {
 #if PICO_RP2350
     volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
     vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_60);
+    vreg_set_voltage(CPU_FREQ > 378 ? VREG_VOLTAGE_1_70 : VREG_VOLTAGE_1_60);
     sleep_ms(10);
     *qmi_m0_timing = 0x60007204;
     set_sys_clock_khz(frequencies[frequency_index] * KHZ, false);

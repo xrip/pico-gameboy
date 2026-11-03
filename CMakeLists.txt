@@ -37,7 +37,7 @@ include(pico_sdk_import.cmake)
 project(gameboy-color C CXX ASM)
 # one place for the version: menu footer (PICO_PROGRAM_VERSION_STRING),
 # binary info and the output file name
-set(PICO_GAMEBOY_VERSION "3.2.3")
+set(PICO_GAMEBOY_VERSION "3.2.4")
 SET(BUILD_NAME "${PROJECT_NAME}")
 
 option(I2S "Enable I2S sound" OFF)
@@ -62,6 +62,7 @@ set(HDMI ON)
 #set(TV ON)
 #set(SOFTTV ON)
 set(USB_HID ON)
+set(CPU_FREQ 504)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -152,8 +153,11 @@ IF(TFT)
     ENDIF()
 ELSEIF(HDMI)
     target_link_libraries(${PROJECT_NAME} PRIVATE hdmi)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI)
-    SET(BUILD_NAME "${BUILD_NAME}-HDMI")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        HDMI
+        CPU_FREQ=${CPU_FREQ}
+    )
+    SET(BUILD_NAME "${BUILD_NAME}-HDMI-${CPU_FREQ}")
 ELSEIF(TV)
     target_compile_definitions(${PROJECT_NAME} PRIVATE TV)
     target_link_libraries(${PROJECT_NAME} PRIVATE tv)
