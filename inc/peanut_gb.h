@@ -652,7 +652,13 @@ struct gb_s
 		uint8_t sp_palette[8];
 
 		uint8_t window_clear;
-		uint8_t WY;
+		/* The WY condition of this frame: LY == WY was seen at the start
+		 * of a line with the window enabled.  The window is drawn from then
+		 * on (while enabled).  Before, WY was taken once at LY = 0 and
+		 * compared with LY >= WY: a game that moves the window with WY in
+		 * the middle of a frame got it at the wrong line (Zen, Darkwing
+		 * Duck). */
+		uint8_t wy_hit;
 
 		/* Only support 30fps frame skip. */
 		uint8_t frame_skip_count : 1;
@@ -1209,6 +1215,10 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 				gb->lcd_blank = 1;
 				/* The counter was also used to advance time with LCD off. */
 				gb->counter.lcd_count = 0;
+				/* line 0 of a new frame (no new-line step for it) */
+				gb->display.window_clear = 0;
+				gb->display.wy_hit = (val & LCDC_WINDOW_ENABLE) &&
+					gb->hram_io[IO_WY] == 0;
 			}
 			/* Check if LCD is being switched off. */
 			else if (lcd_enabled && !(val & LCDC_ENABLE))
@@ -1649,7 +1659,7 @@ void __gb_draw_line(struct gb_s *gb)
 		{
 			/* Compensate for missing window draw if required. */
 			if(gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE
-					&& gb->hram_io[IO_LY] >= gb->display.WY
+					&& gb->display.wy_hit
 					&& gb->hram_io[IO_WX] <= 166)
 				gb->display.window_clear++;
 
@@ -1811,7 +1821,7 @@ void __gb_draw_line(struct gb_s *gb)
 
 	/* draw window */
 	if(gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE
-			&& gb->hram_io[IO_LY] >= gb->display.WY
+			&& gb->display.wy_hit
 			&& gb->hram_io[IO_WX] <= 166)
 	{
 		uint16_t win_line, tile;
@@ -3874,9 +3884,12 @@ void __gb_step_cpu(struct gb_s *gb)
 				if(gb->hram_io[IO_LY] == 0)
 				{
 					/* Clear Screen */
-					gb->display.WY = gb->hram_io[IO_WY];
+					gb->display.wy_hit = 0;
 					gb->display.window_clear = 0;
 				}
+				if((gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE) &&
+						gb->hram_io[IO_LY] == gb->hram_io[IO_WY])
+					gb->display.wy_hit = 1;
 
 				gb->hram_io[IO_STAT] =
 					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_OAM;
@@ -4241,7 +4254,7 @@ void gb_init_lcd(struct gb_s *gb,
 	gb->display.frame_skip_count = 0;
 
 	gb->display.window_clear = 0;
-	gb->display.WY = 0;
+	gb->display.wy_hit = 0;
 
 	return;
 }
