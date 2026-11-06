@@ -181,7 +181,8 @@ static bool rom_image_damaged = false;
 uint8_t SCREEN[LCD_HEIGHT][LCD_WIDTH];
 static FATFS fs;
 
-uint16_t stream[AUDIO_BUFFER_SIZE_BYTES];
+/* AUDIO_SAMPLES stereo 16-bit frames: AUDIO_BUFFER_SIZE_BYTES bytes. */
+uint16_t stream[AUDIO_BUFFER_SIZE_BYTES / sizeof(uint16_t)];
 
 typedef uint32_t palette222_t[3][4];
 static palette222_t palette;
@@ -1024,7 +1025,12 @@ typedef struct __attribute__((__packed__)) {
     char filename[79];
 } file_item_t;
 
+#if PICO_RP2350
 constexpr int max_files = 500;
+#else
+/* RP2040: 85 bytes a file; the rest is left to the heap (I2S DMA buffer) */
+constexpr int max_files = 256;
+#endif
 static file_item_t fileItems[max_files];
 
 int compareFileItems(const void* a, const void* b) {
@@ -1040,24 +1046,9 @@ int compareFileItems(const void* a, const void* b) {
 }
 
 bool isExecutable(const char pathname[255],const char *extensions) {
-    char *pathCopy = strdup(pathname);
-    const char* token = strrchr(pathCopy, '.');
-
-    if (token == nullptr) {
-        return false;
-    }
-
-    token++;
-
-    while (token != NULL) {
-        if (strstr(extensions, token) != NULL) {
-            free(pathCopy);
-            return true;
-        }
-        token = strtok(NULL, ",");
-    }
-    free(pathCopy);
-    return false;
+    /* No copy: strdup() went to the heap and leaked on a name without a dot. */
+    const char* dot = strrchr(pathname, '.');
+    return dot != nullptr && strstr(extensions, dot + 1) != nullptr;
 }
 
 #if PICO_RP2350
@@ -2157,7 +2148,7 @@ static bool gbbp_try_install(const char* pathname) {
             message = "ERROR: can't write the backplan";
             config_mkdirs();
             if (f_lseek(&src, 0) == FR_OK && f_open(&dst, GBBP_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-                static uint8_t chunk[4096];
+                static uint8_t chunk[512]; // one sector: f_read/f_write go through the FIL buffer anyway
                 bool ok = true;
                 for (UINT br = 1; ok && br;) {
                     UINT bw = 0;
