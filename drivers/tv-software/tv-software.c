@@ -517,7 +517,10 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
         int dec_str = 0;
 
 
-        if (line_active == video_mode.N_lines) {
+        /* >=, not ==: graphics_set_mode() switches 525/625 -> 262/312 lines
+         * while the field is running; a counter already past the new end
+         * never wrapped and the vertical sync was never sent again. */
+        if (line_active >= video_mode.N_lines) {
             line_active = 0;
             frame_i++;
             input_buffer = graphics_buffer.data;
