@@ -157,10 +157,20 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+    /* The Game Boy picture and the overlay skip the lines that repeat the
+     * previous buffer, so a drawn line is shown on 2 (2x, overlay), 3 (3x)
+     * or 3..4 (Full) screen lines. Picking the buffer by the parity of the
+     * screen line then draws into the buffer still on the screen whenever a
+     * run is even (always in 2x, on the 4-line rows in Full): its bg fill
+     * runs ahead of the DMA and the rest of that line comes out black.
+     * Alternate the two buffers per drawn line instead. */
+    static uint32_t drawn_buffer = 0;
+#define NEXT_DRAWN_BUFFER() (output_buffer = &lines_pattern[2 + (drawn_buffer ^= 1)])
 
     const int overlay_y = screen_line >> 1;
     if (overlay_enabled && graphics_mode == GRAPHICSMODE_DEFAULT && overlay_y >= OVERLAY_BAR_Y) {
         if (screen_line & 1) return;
+        NEXT_DRAWN_BUFFER();
         uint16_t* const dst = (uint16_t*)((uint8_t*)*output_buffer + shift_picture);
         /* 255 is the screen border colour on HDMI / TV; on VGA the border is
          * bg_color and palette[255] is just a palette entry (light): use
@@ -197,6 +207,7 @@ void __time_critical_func() dma_handler_VGA() {
         if (cells) {
             /* with the backplane a new cell row begins on every second line */
             if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1) && !gray_row) return;
+            NEXT_DRAWN_BUFFER();
             const uint8_t* bp = cells + (screen_line >> 1) * BACKPLANE_W;
             const uint32_t p_i = (((row < 0 ? screen_line : row) & is_flash_line) + (frame_number & is_flash_frame)) & 1;
             const uint16_t* current_palette = palette[p_i];
@@ -242,6 +253,7 @@ void __time_critical_func() dma_handler_VGA() {
             return;
         }
         if (screen_line > 0 && row == scaled_row(screen_line - 1) && !gray_row) return;
+        NEXT_DRAWN_BUFFER();
 
         const int w = graphics_buffer_width;
         const int line_bytes = visible_line_size * 2; // 640 pixels, one byte each
