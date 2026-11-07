@@ -45,6 +45,14 @@ static int pcpc_dma_right = -1;
 #ifdef AUDIO_PWM_PIN
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#else
+/* I2S underrun: the PIO program stalls on an empty TX FIFO (autopull), so
+ * BCLK and LRCLK stop and the DAC mutes and resyncs -- a click. PWM has no
+ * such problem: its CC register just holds the last level. Do the same for
+ * I2S: the frame DMA chains to a channel that keeps feeding the last frame
+ * of the buffer until the next i2s_dma_write(), so the clocks never stop. */
+static int i2s_hold_dma = -1;
+static uint32_t i2s_hold_word;
 #endif
 
 /**
@@ -167,6 +175,23 @@ void i2s_init(i2s_config_t *i2s_config) {
     addr_write_DMA=(uint32_t*)&pwm_hw->slice[slice_num].cc;
 #else
     channel_config_set_dreq(&dma_config, pio_get_dreq(i2s_config->pio, i2s_config->sm, true));
+
+    i2s_hold_dma = dma_claim_unused_channel(true);
+    {
+        dma_channel_config cfg_h = dma_channel_get_default_config(i2s_hold_dma);
+        channel_config_set_read_increment(&cfg_h, false);
+        channel_config_set_write_increment(&cfg_h, false);
+        channel_config_set_transfer_data_size(&cfg_h, DMA_SIZE_32);
+        channel_config_set_dreq(&cfg_h, pio_get_dreq(i2s_config->pio, i2s_config->sm, true));
+        /* 0x0FFFFFFF: about 1.7 hours at 44.1 kHz; the upper 4 bits are the
+         * mode field on the RP2350, keep them 0 (normal mode). */
+        dma_channel_configure(i2s_hold_dma, &cfg_h,
+                              addr_write_DMA,
+                              &i2s_hold_word,
+                              0x0FFFFFFFu,
+                              false);
+    }
+    channel_config_set_chain_to(&dma_config, i2s_hold_dma);
 #endif
     
     dma_channel_configure(i2s_config->dma_channel,
@@ -178,6 +203,11 @@ void i2s_init(i2s_config_t *i2s_config) {
     );
 
     pio_sm_set_enabled(i2s_config->pio, i2s_config->sm , true);
+#ifndef AUDIO_PWM_PIN
+    /* Silence until the first frame: the clocks run from the start. */
+    i2s_hold_word = 0;
+    dma_channel_start(i2s_hold_dma);
+#endif
 }
 
 /**
@@ -224,6 +254,15 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
     }
 #endif    
 
+#ifndef AUDIO_PWM_PIN
+    /* The frame DMA has finished and chained to the hold channel (or did so
+     * long ago, on an underrun). Stop it and let it repeat the last frame of
+     * the new buffer after it. The 4-word TX FIFO covers the gap. */
+    dma_channel_abort(i2s_hold_dma);
+    i2s_hold_word = ((const uint32_t *)i2s_config->dma_buf)[i2s_config->dma_trans_count - 1];
+    dma_channel_set_read_addr(i2s_hold_dma, &i2s_hold_word, false);
+    dma_channel_set_trans_count(i2s_hold_dma, 0x0FFFFFFFu, false);
+#endif
 
     /* Initiate the DMA transfer */
     dma_channel_transfer_from_buffer_now(i2s_config->dma_channel,
