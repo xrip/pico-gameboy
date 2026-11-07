@@ -1645,9 +1645,12 @@ void __gb_draw_line(struct gb_s *gb)
 	if(gb->direct.frame_skip && !gb->display.frame_skip_count)
 		return;
 
-#if PEANUT_FULL_GBC_SUPPORT
-	uint8_t pixelsPrio[160] = {0};  //do these pixels have priority over OAM?
-#endif
+	/* Do these BG / window pixels have priority over OAM? GBC: the BG
+	 * attribute priority bit. DMG: the colour number (not the shade after
+	 * BGP) - a sprite with OBJ_PRIORITY is hidden behind colours 1..3 only.
+	 * Darkwing Duck's intro maps colours 0 and 1 to the same black and
+	 * shows the sprites only through a colour 0 circle (the spotlight). */
+	uint8_t pixelsPrio[160] = {0};
 	/* If interlaced mode is activated, check if we need to draw the current
 	 * line. */
 	if(gb->direct.interlace)
@@ -1698,7 +1701,11 @@ void __gb_draw_line(struct gb_s *gb)
 			const uint8_t t1 = gb->vram[tile];
 			const uint8_t t2 = gb->vram[tile + 1];
 			for(int b = 7 - (bx & 0x07); b >= 0 && x < LCD_WIDTH; b--, bx++)
-				pixels[x++] = pal[((t1 >> b) & 1) | (((t2 >> b) & 1) << 1)];
+			{
+				const uint8_t c = ((t1 >> b) & 1) | (((t2 >> b) & 1) << 1);
+				pixelsPrio[x] = c;
+				pixels[x++] = pal[c];
+			}
 		}
 	}
 	else if(gb->cgb.cgbMode)
@@ -1831,6 +1838,7 @@ void __gb_draw_line(struct gb_s *gb)
 				else
 				{
 					pixels[disp_x] = gb->display.bg_palette[c];
+					pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 					pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1841,6 +1849,7 @@ void __gb_draw_line(struct gb_s *gb)
 #else
 			c = (t1 & 0x1) | ((t2 & 0x1) << 1);
 			pixels[disp_x] = gb->display.bg_palette[c];
+			pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 			pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1969,6 +1978,7 @@ void __gb_draw_line(struct gb_s *gb)
 				else
 				{
 					pixels[disp_x] = gb->display.bg_palette[c];
+					pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 					pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1979,6 +1989,7 @@ void __gb_draw_line(struct gb_s *gb)
 #else
 			c = (t1 & 0x1) | ((t2 & 0x1) << 1);
 			pixels[disp_x] = gb->display.bg_palette[c];
+			pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 			pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -2114,7 +2125,7 @@ void __gb_draw_line(struct gb_s *gb)
 				}
 				else
 #endif
-				if(c && !(OF & OBJ_PRIORITY && !((pixels[disp_x] & 0x3) == gb->display.bg_palette[0])))
+				if(c && !((OF & OBJ_PRIORITY) && pixelsPrio[disp_x]))
 				{
 					/* Set pixel colour. */
 					pixels[disp_x] = (OF & OBJ_PALETTE)
