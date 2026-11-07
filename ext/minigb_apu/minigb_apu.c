@@ -232,8 +232,10 @@ static void update_square(int16_t* samples, const bool ch2, const uint_fast16_t 
 			uint32_t pos = 0;
 			uint32_t prev_pos = 0;
 			int32_t acc = 0;
+			bool moved = false;
 
 			while (update_freq(c, &pos)) {
+				moved = true;
 				c->square.duty_counter = (c->square.duty_counter + 1) & 7;
 				acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
 				c->val = (c->square.duty & (1 << c->square.duty_counter)) ?
@@ -241,8 +243,15 @@ static void update_square(int16_t* samples, const bool ch2, const uint_fast16_t 
 					VOL_INIT_MIN / MAX_CHAN_VOLUME;
 				prev_pos = pos;
 			}
-			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
-			sample = acc / (int32_t)(c->freq_inc >> sh);
+			/* No edge in this sample: the mean is the level itself, exactly
+			 * acc / (freq_inc >> sh) with acc = (freq_inc >> sh) * val.  Most
+			 * notes are far below the sample rate, so the division (a call
+			 * on RP2040) is left for the samples with an edge. */
+			if (moved) {
+				acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+				sample = acc / (int32_t)(c->freq_inc >> sh);
+			} else
+				sample = c->val;
 		}
 
 		if (c->muted)
@@ -293,10 +302,12 @@ static void update_wave(int16_t *samples, const uint_fast16_t sample_count)
 		uint32_t prev_pos = 0;
 		int32_t acc      = 0;
 		int32_t sample;
+		bool moved = false;
 
 		c->wave.sample = wave_sample(c->val, c->volume);
 
 		while (update_freq(c, &pos)) {
+			moved = true;
 			c->val = (c->val + 1) & 31;
 			acc += (int32_t)((pos - prev_pos) >> sh) *
 				((int)c->wave.sample - 8) * (INT16_MAX/64);
@@ -304,18 +315,21 @@ static void update_wave(int16_t *samples, const uint_fast16_t sample_count)
 			prev_pos  = pos;
 		}
 
-		acc += (int32_t)((c->freq_inc - prev_pos) >> sh) *
-			((int)c->wave.sample - 8) * (INT16_MAX/64);
-		sample = acc / (int32_t)(c->freq_inc >> sh);
+		if (moved) {
+			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) *
+				((int)c->wave.sample - 8) * (INT16_MAX/64);
+			sample = acc / (int32_t)(c->freq_inc >> sh);
+		} else
+			sample = ((int)c->wave.sample - 8) * (INT16_MAX/64); /* as for the square */
 
 		if (c->volume == 0)
 			continue;
 
-		{
-			/* First element is unused. */
-			int16_t div[] = { INT16_MAX, 1, 2, 4 };
-			sample = sample / (div[c->volume]);
-		}
+		/* volume 1..3: 100 %, 50 %, 25 %; constant divisors, no division call */
+		if (c->volume == 2)
+			sample /= 2;
+		else if (c->volume == 3)
+			sample /= 4;
 
 		if (c->muted)
 			continue;
@@ -360,8 +374,10 @@ static void update_noise(int16_t *samples, const uint_fast16_t sample_count)
 		uint32_t prev_pos = 0;
 		int32_t acc       = 0;
 		int32_t sample;
+		bool moved = false;
 
 		while (update_freq(c, &pos)) {
+			moved = true;
 			acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
 			c->noise.lfsr_reg = (c->noise.lfsr_reg << 1) |
 				(c->val >= VOL_INIT_MAX/MAX_CHAN_VOLUME);
@@ -380,8 +396,11 @@ static void update_noise(int16_t *samples, const uint_fast16_t sample_count)
 
 			prev_pos = pos;
 		}
-		acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
-		sample = acc / (int32_t)(c->freq_inc >> sh);
+		if (moved) {
+			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+			sample = acc / (int32_t)(c->freq_inc >> sh);
+		} else
+			sample = c->val; /* as for the square */
 
 		if (c->muted)
 			continue;

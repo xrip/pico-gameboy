@@ -1669,7 +1669,39 @@ void __gb_draw_line(struct gb_s *gb)
 
 	/* If background is enabled, draw it. */
 #if PEANUT_FULL_GBC_SUPPORT
-	if(gb->cgb.cgbMode || gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE)
+	if(!gb->cgb.cgbMode && (gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE))
+	{
+		/* DMG background, a tile at a time and left to right: the same
+		 * pixels as the general loop below, which on a Cortex-M0+ spends
+		 * most of the frame re-testing the CGB attributes per pixel.
+		 * The attribute byte of VRAM bank 1 is still honoured for the
+		 * Y-flip bit, exactly as the general loop does without cgbMode. */
+		const uint8_t lcdc = gb->hram_io[IO_LCDC];
+		const uint8_t bg_y = gb->hram_io[IO_LY] + gb->hram_io[IO_SCY];
+		const uint16_t map = ((lcdc & LCDC_BG_MAP) ? VRAM_BMAP_2 : VRAM_BMAP_1)
+			+ ((bg_y >> 3) << 5);
+		const uint8_t py2 = (uint8_t)((bg_y & 0x07) << 1);
+		uint8_t pal[4];
+		for(uint8_t c = 0; c < 4; c++)
+			pal[c] = gb->display.bg_palette[c] | LCD_PALETTE_BG;
+		uint8_t bx = gb->hram_io[IO_SCX];
+		uint_fast16_t x = 0;
+		while(x < LCD_WIDTH)
+		{
+			const uint8_t idx = gb->vram[map + (bx >> 3)];
+			const uint8_t att = gb->vram[map + (bx >> 3) + 0x2000];
+			uint16_t tile = (lcdc & LCDC_TILE_SELECT)
+				? VRAM_TILES_1 + (idx << 4)
+				: VRAM_TILES_2 + (((idx + 0x80) & 0xFF) << 4);
+			if(!(att & 0x40))
+				tile += py2;
+			const uint8_t t1 = gb->vram[tile];
+			const uint8_t t2 = gb->vram[tile + 1];
+			for(int b = 7 - (bx & 0x07); b >= 0 && x < LCD_WIDTH; b--, bx++)
+				pixels[x++] = pal[((t1 >> b) & 1) | (((t2 >> b) & 1) << 1)];
+		}
+	}
+	else if(gb->cgb.cgbMode)
 #else
 	if(gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE)
 #endif
