@@ -1,10 +1,20 @@
-# Unreleased
+# v3.2.9
 - F10 cycles game -> ROM browser -> settings -> game (without a game: browser -> settings -> browser)
 - 30 Super Game Boy palettes from lospec.com after DMG; the palette numbers in config.ini and the game .ini files of older versions are moved up
 - palette file import: .hex files too, 4 colours go to all three CUSTOM palettes
+- more colour sets and 4 colour files; colour set switching fixed on HDMI; buffers cleaned up before a colour change
 - gray lines between the pixels (the LCD grid), 2x and 3x: VGA - vertical, horizontal or both, HDMI - horizontal; Gray level 0..3
 - TV-SOFT: Colors YES / NO (a black and white picture without the colour subcarrier)
+- TV-SOFT: fixes for RP2040 (less SRAM) and for the timing around HALT
+- HDMI: 504 MHz overclock option; smoother 3x picture
+- VGA: selector and OSD colour fixes
+- sprites: at most 10 per line, as on the Game Boy PPU; sprite order fix
+- audio: sound fixes, I2S buffer without samples, audio re-initialisation on mode change
+- Demo mode: no-loop option
+- performance optimisation; RP2040 builds use less SRAM
+- new boards: Olimex RP2040-PICO-PC with Pico 2 (PCp2), Waveshare RP2350-PiZero (z0p2); MURMULATOR 2.0 (m2p2) fixes; PSRAM improvements
 - build-all.sh / build-all-rp2350.bat: every supported RP2350 configuration; the HDMI / I2S defaults of CMakeLists.txt can be overridden on the command line
+- Pico SDK 2.2.0
 - README rewritten for the current version
 
 # v3.1.3

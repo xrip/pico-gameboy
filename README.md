@@ -10,7 +10,7 @@ retro-computer hardware. It is based on the
 [minigb_apu](https://github.com/baines/MiniGBS) sound emulation; the original
 port is [xrip/pico-gameboy](https://github.com/xrip/pico-gameboy).
 
-Current version: **3.1.3**
+Current version: **3.2.9**
 
 ## Supported boards
 
@@ -271,7 +271,7 @@ RP2350 variant into `bin/rp2350/Release/`:
 ## Firmware file names
 
 `<prefix>-gameboy-color-<video>-<sound>-<version>.uf2`, for example
-`m1p2-gameboy-color-VGA-I2S-3.1.3.uf2`:
+`m1p2-gameboy-color-VGA-I2S-3.2.9.uf2`:
 
 - prefix: `m1p2`, `m2p2`, `PCp2`, `z0p2` (RP2040: `m1p1`, `m2p1`, `PCp1`);
 - video: `VGA`, `HDMI`, `TV-SOFT`, `TV`, `TFT-ST7789`, `TFT-ILI9341`;
