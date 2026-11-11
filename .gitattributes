@@ -1,2 +1,5 @@
 # backplane files are binary: never convert their line ends
 *.gbbp binary
+# Windows batch files need CRLF, shell scripts LF
+*.bat text eol=crlf
+*.sh text eol=lf

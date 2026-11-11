@@ -197,10 +197,17 @@ void __time_critical_func() dma_handler_VGA() {
          * A screen line that shows the same source row as the previous one
          * keeps the previous line buffer (no new DMA address). */
         const int row = scaled_row(screen_line);
+        /* gray lines: the last screen line of a source row (horizontal) and
+         * the last pixel of a source pixel (vertical) are drawn in grey */
+        const uint8_t gray = graphics_scale == GRAPHICS_SCALE_STRETCH ? 0 : gray_lines;
+        const bool gray_row = (gray & GRAPHICS_GRAY_HORIZONTAL) && row >= 0 && scaled_row(screen_line + 1) != row;
+        const bool gray_col = (gray & GRAPHICS_GRAY_VERTICAL) != 0;
+        const uint8_t gray_wire = (uint8_t)(palette16_mask | (gray_level & 3u) * 0x15u);
         const uint8_t* const cells = backplane_cells;
         if (cells) {
             /* with the backplane a new cell row begins on every second line */
-            if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1)) return;
+            if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1) && !gray_row) return;
+            NEXT_DRAWN_BUFFER();
             const uint8_t* bp = cells + (screen_line >> 1) * BACKPLANE_W;
             const uint32_t p_i = (((row < 0 ? screen_line : row) & is_flash_line) + (frame_number & is_flash_frame)) & 1;
             const uint16_t* current_palette = palette[p_i];
@@ -215,9 +222,22 @@ void __time_critical_func() dma_handler_VGA() {
             }
             if (row >= 0) {
                 const uint8_t* src = input_buffer + row * w;
-                for (int x = 0; x < w; x++) {
-                    const uint8_t c = (uint8_t)current_palette[src[x]];
-                    for (int i = k; i--;) *out++ = c;
+                if (gray_row) {
+                    fast_memset((uint8_t *)out, gray_wire, k * w);
+                    out += k * w;
+                }
+                else if (gray_col) {
+                    for (int x = 0; x < w; x++) {
+                        const uint8_t c = (uint8_t)current_palette[src[x]];
+                        for (int i = k - 1; i--;) *out++ = c;
+                        *out++ = gray_wire;
+                    }
+                }
+                else {
+                    for (int x = 0; x < w; x++) {
+                        const uint8_t c = (uint8_t)current_palette[src[x]];
+                        for (int i = k; i--;) *out++ = c;
+                    }
                 }
                 for (int u = BACKPLANE_W - left; u < BACKPLANE_W; u++) {
                     const uint8_t c = (uint8_t)current_palette[bp[u]];
@@ -249,9 +269,22 @@ void __time_critical_func() dma_handler_VGA() {
         uint16_t* current_palette = palette[p_i];
         const uint8_t* src = input_buffer + row * w;
         volatile uint8_t* out = dst + left; // volatile: no memset calls (in the flash)
-        for (int x = 0; x < w; x++) {
-            const uint8_t c = (uint8_t)current_palette[src[x]];
-            for (int i = k; i--;) *out++ = c;
+        if (gray_row) {
+            fast_memset((uint8_t *)out, gray_wire, k * w);
+            out += k * w;
+        }
+        else if (gray_col) {
+            for (int x = 0; x < w; x++) {
+                const uint8_t c = (uint8_t)current_palette[src[x]];
+                for (int i = k - 1; i--;) *out++ = c;
+                *out++ = gray_wire;
+            }
+        }
+        else {
+            for (int x = 0; x < w; x++) {
+                const uint8_t c = (uint8_t)current_palette[src[x]];
+                for (int i = k; i--;) *out++ = c;
+            }
         }
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
         return;
