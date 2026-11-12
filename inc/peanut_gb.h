@@ -198,12 +198,14 @@
 /** LCD characteristics **/
 /* PPU cycles through modes every 456 cycles. */
 #define LCD_LINE_CYCLES     456
-/* Mode 0 starts on cycle 372. */
-#define LCD_MODE_0_CYCLES   372
-/* Mode 2 starts on cycle 204. */
-#define LCD_MODE_2_CYCLES   204
-/* Mode 3 starts on cycle 284. */
-#define LCD_MODE_3_CYCLES   284
+/* A visible line, as on the hardware: mode 2 (OAM search) from cycle 0,
+ * mode 3 (transfer) from 80, mode 0 (HBlank) from 252 to the end.  The line is
+ * drawn at the end of mode 3, so register writes up to then still apply to
+ * it.  Before, the line began with HBlank (0..204, then 2 and 3): a game
+ * that waits for LY and then for the next HBlank lost one HBlank per line
+ * (Mr. Nutz: its VRAM copy no longer fitted the frame, half speed). */
+#define LCD_MODE_3_CYCLES   80
+#define LCD_MODE_0_CYCLES   252
 /* There are 154 scanlines. LY < 154. */
 #define LCD_VERT_LINES      154
 #define LCD_WIDTH           160
@@ -650,7 +652,13 @@ struct gb_s
 		uint8_t sp_palette[8];
 
 		uint8_t window_clear;
-		uint8_t WY;
+		/* The WY condition of this frame: LY == WY was seen at the start
+		 * of a line with the window enabled.  The window is drawn from then
+		 * on (while enabled).  Before, WY was taken once at LY = 0 and
+		 * compared with LY >= WY: a game that moves the window with WY in
+		 * the middle of a frame got it at the wrong line (Zen, Darkwing
+		 * Duck). */
+		uint8_t wy_hit;
 
 		/* Only support 30fps frame skip. */
 		uint8_t frame_skip_count : 1;
@@ -758,6 +766,18 @@ struct gb_s
  * Internal function used to read bytes.
  * addr is host platform endian.
  */
+/* The VBlank IRQ is requested a little after LY becomes 144: on the DMG
+ * LY = 144 is readable for a few cycles before the interrupt.  A game polling
+ * LY == 144 with the VBlank IRQ enabled (RoboCop 2, before turning the LCD
+ * off: LDH A,(44) / CP 90 / JR NZ - 32 cycles) otherwise never saw 144: the
+ * handler ran first and returned on line 145, every frame in the same phase.
+ * This core counts whole instructions, so the window is one such loop:
+ * the IRQ comes after the first instruction that ends 32 cycles or more
+ * after LY = 144. */
+#define GB_VBLANK_IRQ_DELAY 32
+static uint8_t gb_vblank_irq_delayed = 0;
+static uint8_t gb_vblank_irq_wait = 0;
+
 uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 {
 	switch(PEANUT_GB_GET_MSN16(addr))
@@ -765,7 +785,7 @@ uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 	case 0x0:
 		/* IO_BANK is only set to 1 if gb->gb_bootrom_read was not NULL
 		 * on reset. */
-		if(gb->hram_io[IO_BANK] == 0 && addr < 0x0100)
+		if(gb->hram_io[IO_BANK] == 0 && addr < 0x0100 && gb->gb_bootrom_read)
 		{
 			return gb->gb_bootrom_read(gb, addr);
 		}
@@ -926,6 +946,27 @@ uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 /* front-end: a GBC palette entry (0..63, gb->cgb.fixPalette) has changed;
  * it may happen in the middle of a frame (src/main.cpp) */
 void gb_cgb_palette_changed(uint8_t index);
+
+/**
+ * Re-evaluates LY == LYC after a write to STAT or LYC.
+ * The STAT interrupt fires on a rising edge of the LYC condition,
+ * lyc_line is its state before the write.
+ */
+static void __gb_lyc_update(struct gb_s *gb, uint8_t lyc_line)
+{
+	if(!(gb->hram_io[IO_LCDC] & LCDC_ENABLE))
+		return;
+
+	if(gb->hram_io[IO_LY] == gb->hram_io[IO_LYC])
+	{
+		gb->hram_io[IO_STAT] |= STAT_LYC_COINC;
+
+		if(!lyc_line && (gb->hram_io[IO_STAT] & STAT_LYC_INTR))
+			gb->hram_io[IO_IF] |= LCDC_INTR;
+	}
+	else
+		gb->hram_io[IO_STAT] &= ~STAT_LYC_COINC;
+}
 
 void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 {
@@ -1172,6 +1213,12 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			if (!lcd_enabled && (val & LCDC_ENABLE))
 			{
 				gb->lcd_blank = 1;
+				/* The counter was also used to advance time with LCD off. */
+				gb->counter.lcd_count = 0;
+				/* line 0 of a new frame (no new-line step for it) */
+				gb->display.window_clear = 0;
+				gb->display.wy_hit = (val & LCDC_WINDOW_ENABLE) &&
+					gb->hram_io[IO_WY] == 0;
 			}
 			/* Check if LCD is being switched off. */
 			else if (lcd_enabled && !(val & LCDC_ENABLE))
@@ -1193,8 +1240,14 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 		}
 
 		case 0x41:
+		{
+			uint8_t lyc_line = (gb->hram_io[IO_STAT] & STAT_LYC_COINC) &&
+				(gb->hram_io[IO_STAT] & STAT_LYC_INTR);
 			gb->hram_io[IO_STAT] = (val & STAT_USER_BITS) | (gb->hram_io[IO_STAT] & STAT_MODE);
+			/* enabling the LYC interrupt while LY == LYC raises it at once */
+			__gb_lyc_update(gb, lyc_line);
 			return;
+		}
 
 		case 0x42:
 			gb->hram_io[IO_SCY] = val;
@@ -1206,8 +1259,14 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 
 		/* LY (0xFF44) is read only. */
 		case 0x45:
+		{
+			uint8_t lyc_line = (gb->hram_io[IO_STAT] & STAT_LYC_COINC) &&
+				(gb->hram_io[IO_STAT] & STAT_LYC_INTR);
 			gb->hram_io[IO_LYC] = val;
+			/* LY == LYC is compared all the time, not only when LY changes */
+			__gb_lyc_update(gb, lyc_line);
 			return;
+		}
 
 		/* DMA Register */
 		case 0x46:
@@ -1275,9 +1334,13 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 			if(gb->cgb.cgbMode) gb->cgb.vramBankOffset = VRAM_ADDR - (gb->cgb.vramBank << 13);
 			return;
 #endif
-		/* Turn off boot ROM */
+		/* Turn off boot ROM.  Bit 0 unmaps it until the next reset; a
+		 * write of 0 does nothing (Dragon's Lair clears FF50 with the
+		 * sound registers: the boot ROM came back over the interrupt
+		 * vectors, and without a boot ROM it was a NULL call). */
 		case 0x50:
-			gb->hram_io[IO_BANK] = val;
+			if(val & 0x01)
+				gb->hram_io[IO_BANK] = 0x01;
 			return;
 #if PEANUT_FULL_GBC_SUPPORT
 		/* DMA Register */
@@ -1571,22 +1634,6 @@ struct sprite_data {
 	uint8_t x;
 };
 
-#if PEANUT_GB_HIGH_LCD_ACCURACY
-static int compare_sprites(const void *in1, const void *in2)
-{
-	const struct sprite_data *sd1, *sd2;
-	int x_res;
-
-	sd1 = (struct sprite_data *)in1;
-	sd2 = (struct sprite_data *)in2;
-	x_res = (int)sd1->x - (int)sd2->x;
-	if(x_res != 0)
-		return x_res;
-
-	return (int)sd1->sprite_number - (int)sd2->sprite_number;
-}
-#endif
-
 void __gb_draw_line(struct gb_s *gb)
 {
 	uint8_t pixels[160] = {0};
@@ -1598,9 +1645,12 @@ void __gb_draw_line(struct gb_s *gb)
 	if(gb->direct.frame_skip && !gb->display.frame_skip_count)
 		return;
 
-#if PEANUT_FULL_GBC_SUPPORT
-	uint8_t pixelsPrio[160] = {0};  //do these pixels have priority over OAM?
-#endif
+	/* Do these BG / window pixels have priority over OAM? GBC: the BG
+	 * attribute priority bit. DMG: the colour number (not the shade after
+	 * BGP) - a sprite with OBJ_PRIORITY is hidden behind colours 1..3 only.
+	 * Darkwing Duck's intro maps colours 0 and 1 to the same black and
+	 * shows the sprites only through a colour 0 circle (the spotlight). */
+	uint8_t pixelsPrio[160] = {0};
 	/* If interlaced mode is activated, check if we need to draw the current
 	 * line. */
 	if(gb->direct.interlace)
@@ -1612,7 +1662,7 @@ void __gb_draw_line(struct gb_s *gb)
 		{
 			/* Compensate for missing window draw if required. */
 			if(gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE
-					&& gb->hram_io[IO_LY] >= gb->display.WY
+					&& gb->display.wy_hit
 					&& gb->hram_io[IO_WX] <= 166)
 				gb->display.window_clear++;
 
@@ -1622,7 +1672,43 @@ void __gb_draw_line(struct gb_s *gb)
 
 	/* If background is enabled, draw it. */
 #if PEANUT_FULL_GBC_SUPPORT
-	if(gb->cgb.cgbMode || gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE)
+	if(!gb->cgb.cgbMode && (gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE))
+	{
+		/* DMG background, a tile at a time and left to right: the same
+		 * pixels as the general loop below, which on a Cortex-M0+ spends
+		 * most of the frame re-testing the CGB attributes per pixel.
+		 * The attribute byte of VRAM bank 1 is still honoured for the
+		 * Y-flip bit, exactly as the general loop does without cgbMode. */
+		const uint8_t lcdc = gb->hram_io[IO_LCDC];
+		const uint8_t bg_y = gb->hram_io[IO_LY] + gb->hram_io[IO_SCY];
+		const uint16_t map = ((lcdc & LCDC_BG_MAP) ? VRAM_BMAP_2 : VRAM_BMAP_1)
+			+ ((bg_y >> 3) << 5);
+		const uint8_t py2 = (uint8_t)((bg_y & 0x07) << 1);
+		uint8_t pal[4];
+		for(uint8_t c = 0; c < 4; c++)
+			pal[c] = gb->display.bg_palette[c] | LCD_PALETTE_BG;
+		uint8_t bx = gb->hram_io[IO_SCX];
+		uint_fast16_t x = 0;
+		while(x < LCD_WIDTH)
+		{
+			const uint8_t idx = gb->vram[map + (bx >> 3)];
+			const uint8_t att = gb->vram[map + (bx >> 3) + 0x2000];
+			uint16_t tile = (lcdc & LCDC_TILE_SELECT)
+				? VRAM_TILES_1 + (idx << 4)
+				: VRAM_TILES_2 + (((idx + 0x80) & 0xFF) << 4);
+			if(!(att & 0x40))
+				tile += py2;
+			const uint8_t t1 = gb->vram[tile];
+			const uint8_t t2 = gb->vram[tile + 1];
+			for(int b = 7 - (bx & 0x07); b >= 0 && x < LCD_WIDTH; b--, bx++)
+			{
+				const uint8_t c = ((t1 >> b) & 1) | (((t2 >> b) & 1) << 1);
+				pixelsPrio[x] = c;
+				pixels[x++] = pal[c];
+			}
+		}
+	}
+	else if(gb->cgb.cgbMode)
 #else
 	if(gb->hram_io[IO_LCDC] & LCDC_BG_ENABLE)
 #endif
@@ -1752,6 +1838,7 @@ void __gb_draw_line(struct gb_s *gb)
 				else
 				{
 					pixels[disp_x] = gb->display.bg_palette[c];
+					pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 					pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1762,6 +1849,7 @@ void __gb_draw_line(struct gb_s *gb)
 #else
 			c = (t1 & 0x1) | ((t2 & 0x1) << 1);
 			pixels[disp_x] = gb->display.bg_palette[c];
+			pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 			pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1774,7 +1862,7 @@ void __gb_draw_line(struct gb_s *gb)
 
 	/* draw window */
 	if(gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE
-			&& gb->hram_io[IO_LY] >= gb->display.WY
+			&& gb->display.wy_hit
 			&& gb->hram_io[IO_WX] <= 166)
 	{
 		uint16_t win_line, tile;
@@ -1890,6 +1978,7 @@ void __gb_draw_line(struct gb_s *gb)
 				else
 				{
 					pixels[disp_x] = gb->display.bg_palette[c];
+					pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 					pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1900,6 +1989,7 @@ void __gb_draw_line(struct gb_s *gb)
 #else
 			c = (t1 & 0x1) | ((t2 & 0x1) << 1);
 			pixels[disp_x] = gb->display.bg_palette[c];
+			pixelsPrio[disp_x] = c;
 #if PEANUT_GB_12_COLOUR
 			pixels[disp_x] |= LCD_PALETTE_BG;
 #endif
@@ -1915,65 +2005,48 @@ void __gb_draw_line(struct gb_s *gb)
 	// draw sprites
 	if(gb->hram_io[IO_LCDC] & LCDC_OBJ_ENABLE)
 	{
-		uint8_t sprite_number;
-#if PEANUT_GB_HIGH_LCD_ACCURACY
 		uint8_t number_of_sprites = 0;
+		struct sprite_data sprites_to_render[MAX_SPRITES_LINE];
 
-		struct sprite_data sprites_to_render[NUM_SPRITES];
-
-		/* Record number of sprites on the line being rendered, limited
-		 * to the maximum number sprites that the Game Boy is able to
-		 * render on each line (10 sprites). */
-		for(sprite_number = 0;
-				sprite_number < PEANUT_GB_ARRAYSIZE(sprites_to_render);
+		/* OAM search selects the FIRST ten sprites intersecting the line,
+		 * regardless of X. Later OAM entries cannot displace them. */
+		for(uint8_t sprite_number = 0;
+				sprite_number < NUM_SPRITES && number_of_sprites < MAX_SPRITES_LINE;
 				sprite_number++)
 		{
-			/* Sprite Y position. */
-			uint8_t OY = gb->oam[sprite_number << 2];
-			/* Sprite X position. */
-			uint8_t OX = gb->oam[(sprite_number << 2)+ 1];
-
-			/* If sprite isn't on this line, continue. */
+			const uint8_t OY = gb->oam[sprite_number << 2];
 			if(gb->hram_io[IO_LY] +
-				(gb->hram_io[IO_LCDC] & LCDC_OBJ_SIZE ? 0 : 8) >= OY
-					|| gb->hram_io[IO_LY] + 16 < OY)
+				(gb->hram_io[IO_LCDC] & LCDC_OBJ_SIZE ? 0 : 8) >= OY ||
+				gb->hram_io[IO_LY] + 16 < OY)
 				continue;
-
-
 			sprites_to_render[number_of_sprites].sprite_number = sprite_number;
-			sprites_to_render[number_of_sprites].x = OX;
+			sprites_to_render[number_of_sprites].x = gb->oam[(sprite_number << 2) + 1];
 			number_of_sprites++;
 		}
+
 #if PEANUT_FULL_GBC_SUPPORT
 		if(!gb->cgb.cgbMode)
-		{
 #endif
-		/* If maximum number of sprites reached, prioritise X
-		 * coordinate and object location in OAM. */
-		qsort(&sprites_to_render[0], number_of_sprites,
-				sizeof(sprites_to_render[0]), compare_sprites);
-#if PEANUT_FULL_GBC_SUPPORT
+		{
+			/* DMG priority: lower X wins, then lower OAM index.
+			 * Stable insertion sort of at most ten entries; GBC keeps OAM order. */
+			for(uint8_t i = 1; i < number_of_sprites; i++)
+			{
+				const struct sprite_data entry = sprites_to_render[i];
+				uint8_t j = i;
+				while(j && sprites_to_render[j - 1].x > entry.x)
+				{
+					sprites_to_render[j] = sprites_to_render[j - 1];
+					j--;
+				}
+				sprites_to_render[j] = entry;
+			}
 		}
-#endif
-		if(number_of_sprites > MAX_SPRITES_LINE)
-			number_of_sprites = MAX_SPRITES_LINE;
-#endif
 
-		/* Render each sprite, from low priority to high priority. */
-#if PEANUT_GB_HIGH_LCD_ACCURACY
-		/* Render the top ten prioritised sprites on this scanline. */
-		for(sprite_number = number_of_sprites - 1;
-				sprite_number != 0xFF;
-				sprite_number--)
+		/* Paint lower-priority sprites first, preserving sprite transparency. */
+		for(uint8_t i = number_of_sprites; i; )
 		{
-			uint8_t s = sprites_to_render[sprite_number].sprite_number;
-#else
-		for (sprite_number = NUM_SPRITES - 1;
-			sprite_number != 0xFF;
-			sprite_number--)
-		{
-			uint8_t s = sprite_number;
-#endif
+			const uint8_t s = sprites_to_render[--i].sprite_number;
 			uint8_t py, t1, t2, dir, start, end, shift, disp_x;
 			/* Sprite Y position. */
 			uint8_t OY = gb->oam[s << 2];
@@ -1984,14 +2057,6 @@ void __gb_draw_line(struct gb_s *gb)
 				     & (gb->hram_io[IO_LCDC] & LCDC_OBJ_SIZE ? 0xFE : 0xFF);
 			/* Additional attributes. */
 			uint8_t OF = gb->oam[(s << 2) + 3];
-
-#if !PEANUT_GB_HIGH_LCD_ACCURACY
-			/* If sprite isn't on this line, continue. */
-			if(gb->hram_io[IO_LY] +
-					(gb->hram_io[IO_LCDC] & LCDC_OBJ_SIZE ? 0 : 8) >= OY ||
-					gb->hram_io[IO_LY] + 16 < OY)
-				continue;
-#endif
 
 			/* Continue if sprite not visible. */
 			if(OX == 0 || OX >= 168)
@@ -2060,7 +2125,7 @@ void __gb_draw_line(struct gb_s *gb)
 				}
 				else
 #endif
-				if(c && !(OF & OBJ_PRIORITY && !((pixels[disp_x] & 0x3) == gb->display.bg_palette[0])))
+				if(c && !((OF & OBJ_PRIORITY) && pixelsPrio[disp_x]))
 				{
 					/* Set pixel colour. */
 					pixels[disp_x] = (OF & OBJ_PALETTE)
@@ -2089,10 +2154,84 @@ void __gb_draw_line(struct gb_s *gb)
 /**
  * Internal function used to step the CPU.
  */
+/**
+ * Cycles to the next event while in HALT: the next LCD mode or line, a timer
+ * tick or a serial byte, whichever comes first.  Called at HALT and again on
+ * every step of the HALT loop: a step reused for the following events
+ * overshoots them, LCD modes are passed and lines are not drawn.
+ */
+/* Timer: CPU cycles per TIMA tick, by TAC bits 0..1 */
+static const uint_fast16_t TAC_CYCLES[4] = {1024, 16, 64, 256};
+
+static uint_fast16_t __gb_halt_cycles(struct gb_s *gb)
+{
+	int_fast16_t halt_cycles = INT_FAST16_MAX;
+
+	if(gb->hram_io[IO_SC] & SERIAL_SC_TX_START)
+	{
+		int serial_cycles = SERIAL_CYCLES -
+			gb->counter.serial_count;
+
+		if(serial_cycles < halt_cycles)
+			halt_cycles = serial_cycles;
+	}
+
+	if(gb->hram_io[IO_TAC] & IO_TAC_ENABLE_MASK)
+	{
+		int tac_cycles = TAC_CYCLES[gb->hram_io[IO_TAC] & IO_TAC_RATE_MASK] -
+			gb->counter.tima_count;
+
+		if(tac_cycles < halt_cycles)
+			halt_cycles = tac_cycles;
+	}
+
+	if((gb->hram_io[IO_LCDC] & LCDC_ENABLE))
+	{
+		int lcd_cycles;
+
+		/* If LCD is in HBlank, calculate the number of cycles
+		 * until the end of HBlank and the start of mode 2 or
+		 * mode 1. */
+		if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM)
+		{
+			lcd_cycles = LCD_MODE_3_CYCLES -
+				gb->counter.lcd_count;
+		}
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER)
+		{
+			lcd_cycles = LCD_MODE_0_CYCLES -
+				gb->counter.lcd_count;
+		}
+		else
+		{
+			/* HBlank (to the next line) or VBlank */
+			lcd_cycles =
+				LCD_LINE_CYCLES - gb->counter.lcd_count;
+		}
+
+		if(lcd_cycles < halt_cycles)
+			halt_cycles = lcd_cycles;
+	}
+	else if (halt_cycles > LCD_LINE_CYCLES)
+	{
+		/* With LCD off, the HALT fast-forward still needs bounded
+		 * steps for DIV/TIMA/serial and a responsive host frame. */
+		halt_cycles = LCD_LINE_CYCLES;
+	}
+
+	/* Some halt cycles may already be very high, so make sure we
+	 * don't underflow here. */
+	if(halt_cycles <= 0)
+		halt_cycles = 4;
+
+	return (uint_fast16_t)halt_cycles;
+}
+
 void __gb_step_cpu(struct gb_s *gb)
 {
 	uint8_t opcode;
 	uint_fast16_t inst_cycles;
+	uint8_t halt_loop = 0;
 	static const uint8_t op_cycles[0x100] =
 	{
 		/* *INDENT-OFF* */
@@ -2115,8 +2254,16 @@ void __gb_step_cpu(struct gb_s *gb)
 		12,12,8, 4, 0,16, 8,16,12, 8,16, 4, 0, 0, 8,16	/* 0xF0 */
 		/* *INDENT-ON* */
 	};
-	static const uint_fast16_t TAC_CYCLES[4] = {1024, 16, 64, 256};
 
+	/* A host frame may end while the CPU remains in HALT.  If no
+	 * enabled interrupt is pending, advance HALT clocks without fetching
+	 * the next opcode or corrupting the CPU stack/PC. */
+	if (gb->gb_halt && !(gb->hram_io[IO_IF] & gb->hram_io[IO_IE] & ANY_INTR))
+	{
+		opcode = 0x76; /* HALT: retain PC until an interrupt occurs */
+	}
+	else
+	{
 	/* Handle interrupts */
 	/* If gb_halt is positive, then an interrupt must have occured by the
 	 * time we reach here, becuase on HALT, we jump to the next interrupt
@@ -2166,8 +2313,9 @@ void __gb_step_cpu(struct gb_s *gb)
 		break;
 	}
 
-	/* Obtain opcode */
+	/* Obtain opcode only when CPU is not waiting in HALT. */
 	opcode = __gb_read(gb, gb->cpu_reg.pc.reg++);
+	}
 	inst_cycles = op_cycles[opcode];
 
 	/* Execute opcode */
@@ -2813,80 +2961,10 @@ void __gb_step_cpu(struct gb_s *gb)
 		break;
 
 	case 0x76: /* HALT */
-	{
-		int_fast16_t halt_cycles = INT_FAST16_MAX;
-
 		/* TODO: Emulate HALT bug? */
 		gb->gb_halt = 1;
-
-		if (gb->hram_io[IO_IE] == 0)
-		{
-			/* Return program counter where this halt forever state started. */
-			/* This may be intentional, but this is required to stop an infinite
-			 * loop. */
-			(gb->gb_error)(gb, GB_HALT_FOREVER, gb->cpu_reg.pc.reg - 1);
-			PGB_UNREACHABLE();
-		}
-
-		if(gb->hram_io[IO_SC] & SERIAL_SC_TX_START)
-		{
-			int serial_cycles = SERIAL_CYCLES -
-				gb->counter.serial_count;
-
-			if(serial_cycles < halt_cycles)
-				halt_cycles = serial_cycles;
-		}
-
-		if(gb->hram_io[IO_TAC] & IO_TAC_ENABLE_MASK)
-		{
-			int tac_cycles = TAC_CYCLES[gb->hram_io[IO_TAC] & IO_TAC_RATE_MASK] -
-				gb->counter.tima_count;
-
-			if(tac_cycles < halt_cycles)
-				halt_cycles = tac_cycles;
-		}
-
-		if((gb->hram_io[IO_LCDC] & LCDC_ENABLE))
-		{
-			int lcd_cycles;
-
-			/* If LCD is in HBlank, calculate the number of cycles
-			 * until the end of HBlank and the start of mode 2 or
-			 * mode 1. */
-			if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_HBLANK)
-			{
-				lcd_cycles = LCD_MODE_2_CYCLES -
-					     gb->counter.lcd_count;
-			}
-			else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM)
-			{
-				lcd_cycles = LCD_MODE_3_CYCLES -
-					gb->counter.lcd_count;
-			}
-			else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER)
-			{
-				lcd_cycles = LCD_MODE_0_CYCLES -
-					gb->counter.lcd_count;
-			}
-			else
-			{
-				/* VBlank */
-				lcd_cycles =
-					LCD_LINE_CYCLES - gb->counter.lcd_count;
-			}
-
-			if(lcd_cycles < halt_cycles)
-				halt_cycles = lcd_cycles;
-		}
-
-		/* Some halt cycles may already be very high, so make sure we
-		 * don't underflow here. */
-		if(halt_cycles <= 0)
-			halt_cycles = 4;
-
-		inst_cycles = (uint_fast16_t)halt_cycles;
+		inst_cycles = __gb_halt_cycles(gb);
 		break;
-	}
 
 	case 0x77: /* LD (HL), A */
 		__gb_write(gb, gb->cpu_reg.hl.reg, gb->cpu_reg.a);
@@ -3639,6 +3717,31 @@ void __gb_step_cpu(struct gb_s *gb)
 
 	do
 	{
+		/* In HALT every step goes to the next event (see __gb_halt_cycles) */
+		if(halt_loop)
+			inst_cycles = __gb_halt_cycles(gb);
+		halt_loop = 1;
+
+		if(gb_vblank_irq_delayed)
+		{
+			gb_vblank_irq_wait += inst_cycles;
+			if(gb_vblank_irq_wait >= GB_VBLANK_IRQ_DELAY || gb->gb_halt)
+			{
+				gb_vblank_irq_delayed = 0;
+				gb->hram_io[IO_IF] |= VBLANK_INTR;
+			}
+		}
+
+#if ENABLE_SOUND && !HWAY
+		/* Advance the audio clock once per emulated CPU timeslice.
+		 * Only APU register writes actually trigger audio rendering. */
+#if PEANUT_FULL_GBC_SUPPORT
+		gb_audio_cycles += inst_cycles > 1 ?
+			(inst_cycles >> gb->cgb.doubleSpeed) : inst_cycles;
+#else
+		gb_audio_cycles += inst_cycles;
+#endif
+#endif
 		/* DIV register timing */
 		gb->counter.div_count += inst_cycles;
 		while(gb->counter.div_count >= DIV_CYCLES)
@@ -3725,10 +3828,27 @@ void __gb_step_cpu(struct gb_s *gb)
 			}
 		}
 
-		/* If LCD is off, don't update LCD state or increase the LCD
-		 * ticks. */
+		/* With LCD disabled there is no VBlank, but CPU, timer and serial
+		 * clocks continue.  Produce a host frame every 154 * 456 LCD clocks
+		 * so gb_run_frame() cannot trap the input/menu loop forever.
+		 * lcd_count is otherwise idle until LCDC is enabled again. */
 		if(!(gb->hram_io[IO_LCDC] & LCDC_ENABLE))
+		{
+#if PEANUT_FULL_GBC_SUPPORT
+			if (inst_cycles > 1)
+				gb->counter.lcd_count += (inst_cycles >> gb->cgb.doubleSpeed);
+			else
+#endif
+			gb->counter.lcd_count += inst_cycles;
+			if (gb->counter.lcd_count >= LCD_LINE_CYCLES * LCD_VERT_LINES)
+			{
+				gb->counter.lcd_count -= LCD_LINE_CYCLES * LCD_VERT_LINES;
+				gb->gb_frame = 1;
+				/* Leave the internal HALT acceleration loop as well. */
+				if (gb->gb_halt) break;
+			}
 			continue;
+		}
 
 		/* LCD Timing */
 #if PEANUT_FULL_GBC_SUPPORT
@@ -3763,7 +3883,14 @@ void __gb_step_cpu(struct gb_s *gb)
 				gb->hram_io[IO_STAT] =
 					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_VBLANK;
 				gb->gb_frame = 1;
-				gb->hram_io[IO_IF] |= VBLANK_INTR;
+				/* in HALT nothing can read LY: wake up at once */
+				if(gb->gb_halt)
+					gb->hram_io[IO_IF] |= VBLANK_INTR;
+				else
+				{
+					gb_vblank_irq_delayed = 1;
+					gb_vblank_irq_wait = 0;
+				}
 				gb->lcd_blank = 0;
 
 				if(gb->hram_io[IO_STAT] & STAT_MODE_1_INTR)
@@ -3789,6 +3916,10 @@ void __gb_step_cpu(struct gb_s *gb)
 						!gb->display.interlace_count;
 				}
 #endif
+				/* The host frame is complete regardless of which interrupt is
+				 * enabled.  HALT may wait for a timer/STAT IRQ that will never
+				 * occur.  Leave gb_halt set but return control to main(). */
+				if (gb->gb_halt) break;
 			}
 			/* Normal Line */
 			else if(gb->hram_io[IO_LY] < LCD_HEIGHT)
@@ -3796,12 +3927,45 @@ void __gb_step_cpu(struct gb_s *gb)
 				if(gb->hram_io[IO_LY] == 0)
 				{
 					/* Clear Screen */
-					gb->display.WY = gb->hram_io[IO_WY];
+					gb->display.wy_hit = 0;
 					gb->display.window_clear = 0;
 				}
+				if((gb->hram_io[IO_LCDC] & LCDC_WINDOW_ENABLE) &&
+						gb->hram_io[IO_LY] == gb->hram_io[IO_WY])
+					gb->display.wy_hit = 1;
 
 				gb->hram_io[IO_STAT] =
-					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_HBLANK;
+					(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_OAM;
+
+				if(gb->hram_io[IO_STAT] & STAT_MODE_2_INTR)
+					gb->hram_io[IO_IF] |= LCDC_INTR;
+
+				/* If halted immediately jump to next LCD mode. */
+				if(gb->counter.lcd_count < LCD_MODE_3_CYCLES)
+					inst_cycles = LCD_MODE_3_CYCLES - gb->counter.lcd_count;
+			}
+		}
+		/* Transfer */
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM &&
+				gb->counter.lcd_count >= LCD_MODE_3_CYCLES)
+		{
+			gb->hram_io[IO_STAT] =
+				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_TRANSFER;
+
+			/* If halted immediately jump to next LCD mode. */
+			if (gb->counter.lcd_count < LCD_MODE_0_CYCLES)
+				inst_cycles = LCD_MODE_0_CYCLES - gb->counter.lcd_count;
+		}
+		/* Update LCD, HBlank */
+		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_TRANSFER &&
+				gb->counter.lcd_count >= LCD_MODE_0_CYCLES)
+		{
+#if ENABLE_LCD
+			if(!gb->lcd_blank)
+				__gb_draw_line(gb);
+#endif
+			gb->hram_io[IO_STAT] =
+				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_HBLANK;
 
 #if PEANUT_FULL_GBC_SUPPORT
 				//DMA GBC
@@ -3817,41 +3981,11 @@ void __gb_step_cpu(struct gb_s *gb)
 					if(!(--gb->cgb.dmaSize)) gb->cgb.dmaActive = 1;
 				}
 #endif
-				if(gb->hram_io[IO_STAT] & STAT_MODE_0_INTR)
-					gb->hram_io[IO_IF] |= LCDC_INTR;
-
-				/* If halted immediately jump to next LCD mode. */
-				if(gb->counter.lcd_count < LCD_MODE_2_CYCLES)
-					inst_cycles = LCD_MODE_2_CYCLES - gb->counter.lcd_count;
-			}
-		}
-		/* OAM access */
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_HBLANK &&
-				gb->counter.lcd_count >= LCD_MODE_2_CYCLES)
-		{
-			gb->hram_io[IO_STAT] =
-				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_OAM;
-
-			if(gb->hram_io[IO_STAT] & STAT_MODE_2_INTR)
+			if(gb->hram_io[IO_STAT] & STAT_MODE_0_INTR)
 				gb->hram_io[IO_IF] |= LCDC_INTR;
 
-			/* If halted immediately jump to next LCD mode. */
-			if (gb->counter.lcd_count < LCD_MODE_3_CYCLES)
-				inst_cycles = LCD_MODE_3_CYCLES - gb->counter.lcd_count;
-		}
-		/* Update LCD */
-		else if((gb->hram_io[IO_STAT] & STAT_MODE) == IO_STAT_MODE_SEARCH_OAM &&
-				gb->counter.lcd_count >= LCD_MODE_3_CYCLES)
-		{
-			gb->hram_io[IO_STAT] =
-				(gb->hram_io[IO_STAT] & ~STAT_MODE) | IO_STAT_MODE_SEARCH_TRANSFER;
-#if ENABLE_LCD
-			if(!gb->lcd_blank)
-				__gb_draw_line(gb);
-#endif
-			/* If halted immediately jump to next LCD mode. */
-			if (gb->counter.lcd_count < LCD_MODE_0_CYCLES)
-				inst_cycles = LCD_MODE_0_CYCLES - gb->counter.lcd_count;
+			/* If halted immediately jump to the next line. */
+			inst_cycles = LCD_LINE_CYCLES - gb->counter.lcd_count;
 		}
 	} while(gb->gb_halt && (gb->hram_io[IO_IF] & gb->hram_io[IO_IE]) == 0);
 	/* If halted, loop until an interrupt occurs. */
@@ -3913,7 +4047,11 @@ uint8_t gb_colour_hash(struct gb_s *gb)
 void gb_reset(struct gb_s *gb)
 {
 	gb->gb_halt = 0;
-	gb->gb_ime = 1;
+	gb_vblank_irq_delayed = 0;
+	/* The boot ROM jumps to 0x0100 with interrupts disabled (IME = 0):
+	 * a game may set IE and clear the RAM before its EI (RoboCop 2 - a
+	 * VBlank IRQ then called the OAM DMA routine not yet copied to HRAM). */
+	gb->gb_ime = 0;
 
 	/* Initialise MBC values. */
 	gb->selected_rom_bank = 1;
@@ -4159,7 +4297,7 @@ void gb_init_lcd(struct gb_s *gb,
 	gb->display.frame_skip_count = 0;
 
 	gb->display.window_clear = 0;
-	gb->display.WY = 0;
+	gb->display.wy_hit = 0;
 
 	return;
 }

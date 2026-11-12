@@ -56,6 +56,16 @@ void graphics_set_mode(enum graphics_mode_t mode);
 
 void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
 
+#if VGA || HDMI || SOFTTV
+/* Bottom-of-screen Demo OSD, drawn by scanout (not into the game frame).
+ * 255 is the black screen border (graphics_set_bgcolor), 215 is an existing
+ * high-contrast colour (white on HDMI/TV, bright on VGA).  Backplane owns
+ * 192..199 and 216..239: never overwrite those palette slots for OSD. */
+#define GRAPHICS_OSD_BG 255u
+#define GRAPHICS_OSD_FG 215u
+void graphics_set_overlay(const char* text, bool enabled);
+#endif
+
 /* HDMI / VGA / TV: counts the ends of the picture (once per field).  A buffer
  * set right after it (before the vertical blank is over) is shown whole from
  * the next field; the palette entries changed then apply to it alone. */
@@ -70,6 +80,20 @@ enum graphics_scale_t {
     GRAPHICS_SCALE_STRETCH, // the whole 640x480 screen
 };
 void graphics_set_scale(enum graphics_scale_t scale);
+
+/* VGA / HDMI, 2x and 3x: the gaps between the Game Boy pixels drawn in grey,
+ * like the grid of the real LCD.  lines: bit 0 - vertical gaps (VGA only:
+ * an HDMI sample is 2 pixels wide), bit 1 - horizontal ones; level 0..3 -
+ * black, dark grey, light grey, white. */
+#define GRAPHICS_GRAY_VERTICAL   1u
+#define GRAPHICS_GRAY_HORIZONTAL 2u
+void graphics_set_gray_lines(uint8_t lines, uint8_t level);
+/* HDMI 3x: a Game Boy pixel is 1.5 samples (a, a, b); with the table the
+ * shared sample is the mix of the two (a, mix, b), so every pixel looks the
+ * same width.  mix12: 12 x 12 slots (row a, column b) of the mixes of the 12
+ * base slots, base: the base slot (0..11, 0xFF - none) of every slot.
+ * mix12 = NULL - off.  The other drivers ignore it. */
+void graphics_set_hmix(const uint8_t* mix12, const uint8_t* base);
 
 /* HDMI / VGA / TV-SOFT: the Game Boy Color picture around the game (2x and
  * 3x; Full has none).  backplane_cells: 320x240 cells of 2x2 pixels of the

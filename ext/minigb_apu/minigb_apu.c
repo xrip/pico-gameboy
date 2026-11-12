@@ -158,6 +158,17 @@ static bool update_freq(struct chan *c, uint32_t *pos)
 	}
 }
 
+/* The part of an output sample between two steps of a channel is weighted
+ * by its length (a box filter): acc += box_part(c, pos - prev_pos) * value,
+ * the sample is acc / box_whole(c).  Before, the parts were divided by the
+ * whole sample in integers, i.e. dropped: the output was the value at the
+ * end of the sample, and a tone above the sample rate came out as a loud
+ * alias.  The shift keeps acc in 32 bits (freq_inc is up to ~2^25). */
+static unsigned box_shift(const struct chan *c)
+{
+	return c->freq_inc >= (1u << 22) ? 8u : c->freq_inc >= (1u << 16) ? 4u : 0u;
+}
+
 static void update_sweep(struct chan *c)
 {
 	c->sweep.counter += c->sweep.inc;
@@ -183,7 +194,7 @@ static void update_sweep(struct chan *c)
 	}
 }
 
-static void update_square(int16_t* samples, const bool ch2)
+static void update_square(int16_t* samples, const bool ch2, const uint_fast16_t sample_count)
 {
 	uint32_t freq;
 	struct chan* c = chans + ch2;
@@ -195,7 +206,7 @@ static void update_square(int16_t* samples, const bool ch2)
 	set_note_freq(c, freq);
 	c->freq_inc *= 8;
 
-	for (uint_fast16_t i = 0; i < AUDIO_NSAMPLES; i += 2) {
+	for (uint_fast16_t i = 0; i < sample_count; i += 2) {
 		update_len(c);
 
 		if (!c->enabled)
@@ -205,23 +216,47 @@ static void update_square(int16_t* samples, const bool ch2)
 		if (!ch2)
 			update_sweep(c);
 
-		uint32_t pos = 0;
-		uint32_t prev_pos = 0;
-		int32_t sample = 0;
+		int32_t sample;
 
-		while (update_freq(c, &pos)) {
-			c->square.duty_counter = (c->square.duty_counter + 1) & 7;
-			sample += ((pos - prev_pos) / c->freq_inc) * c->val;
-			c->val = (c->square.duty & (1 << c->square.duty_counter)) ?
-				VOL_INIT_MAX / MAX_CHAN_VOLUME :
-				VOL_INIT_MIN / MAX_CHAN_VOLUME;
-			prev_pos = pos;
+		if (2048 - c->freq < 6) {
+			/* above 21 kHz (131072 / (2048 - x)): no tone on a Game Boy, only
+			 * the mean level of the duty cycle.  Games play PCM with it by
+			 * changing the volume (Gauntlet II: x = 2047, 131 kHz). */
+			unsigned high = 0;
+			for (unsigned b = 0; b < 8; b++)
+				high += (c->square.duty >> b) & 1;
+			sample = ((int32_t)high * (VOL_INIT_MAX / MAX_CHAN_VOLUME) +
+				  (int32_t)(8 - high) * (VOL_INIT_MIN / MAX_CHAN_VOLUME)) / 8;
+		} else {
+			const unsigned sh = box_shift(c);
+			uint32_t pos = 0;
+			uint32_t prev_pos = 0;
+			int32_t acc = 0;
+			bool moved = false;
+
+			while (update_freq(c, &pos)) {
+				moved = true;
+				c->square.duty_counter = (c->square.duty_counter + 1) & 7;
+				acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
+				c->val = (c->square.duty & (1 << c->square.duty_counter)) ?
+					VOL_INIT_MAX / MAX_CHAN_VOLUME :
+					VOL_INIT_MIN / MAX_CHAN_VOLUME;
+				prev_pos = pos;
+			}
+			/* No edge in this sample: the mean is the level itself, exactly
+			 * acc / (freq_inc >> sh) with acc = (freq_inc >> sh) * val.  Most
+			 * notes are far below the sample rate, so the division (a call
+			 * on RP2040) is left for the samples with an edge. */
+			if (moved) {
+				acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+				sample = acc / (int32_t)(c->freq_inc >> sh);
+			} else
+				sample = c->val;
 		}
 
 		if (c->muted)
 			continue;
 
-		sample += c->val;
 		sample *= c->volume;
 		sample /= 4;
 
@@ -243,7 +278,7 @@ static uint8_t wave_sample(const unsigned int pos, const unsigned int volume)
 	return volume ? (sample >> (volume - 1)) : 0;
 }
 
-static void update_wave(int16_t *samples)
+static void update_wave(int16_t *samples, const uint_fast16_t sample_count)
 {
 	uint32_t freq;
 	struct chan *c = chans + 2;
@@ -256,36 +291,45 @@ static void update_wave(int16_t *samples)
 
 	c->freq_inc *= 32;
 
-	for (uint_fast16_t i = 0; i < AUDIO_NSAMPLES; i += 2) {
+	for (uint_fast16_t i = 0; i < sample_count; i += 2) {
 		update_len(c);
 
 		if (!c->enabled)
 			continue;
 
+		const unsigned sh = box_shift(c);
 		uint32_t pos      = 0;
 		uint32_t prev_pos = 0;
-		int32_t sample   = 0;
+		int32_t acc      = 0;
+		int32_t sample;
+		bool moved = false;
 
 		c->wave.sample = wave_sample(c->val, c->volume);
 
 		while (update_freq(c, &pos)) {
+			moved = true;
 			c->val = (c->val + 1) & 31;
-			sample += ((pos - prev_pos) / c->freq_inc) *
+			acc += (int32_t)((pos - prev_pos) >> sh) *
 				((int)c->wave.sample - 8) * (INT16_MAX/64);
 			c->wave.sample = wave_sample(c->val, c->volume);
 			prev_pos  = pos;
 		}
 
-		sample += ((int)c->wave.sample - 8) * (int)(INT16_MAX/64);
+		if (moved) {
+			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) *
+				((int)c->wave.sample - 8) * (INT16_MAX/64);
+			sample = acc / (int32_t)(c->freq_inc >> sh);
+		} else
+			sample = ((int)c->wave.sample - 8) * (INT16_MAX/64); /* as for the square */
 
 		if (c->volume == 0)
 			continue;
 
-		{
-			/* First element is unused. */
-			int16_t div[] = { INT16_MAX, 1, 2, 4 };
-			sample = sample / (div[c->volume]);
-		}
+		/* volume 1..3: 100 %, 50 %, 25 %; constant divisors, no division call */
+		if (c->volume == 2)
+			sample /= 2;
+		else if (c->volume == 3)
+			sample /= 4;
 
 		if (c->muted)
 			continue;
@@ -297,7 +341,7 @@ static void update_wave(int16_t *samples)
 	}
 }
 
-static void update_noise(int16_t *samples)
+static void update_noise(int16_t *samples, const uint_fast16_t sample_count)
 {
 	struct chan *c = chans + 3;
 
@@ -317,7 +361,7 @@ static void update_noise(int16_t *samples)
 	if (c->freq >= 14)
 		c->enabled = 0;
 
-	for (uint_fast16_t i = 0; i < AUDIO_NSAMPLES; i += 2) {
+	for (uint_fast16_t i = 0; i < sample_count; i += 2) {
 		update_len(c);
 
 		if (!c->enabled)
@@ -325,11 +369,16 @@ static void update_noise(int16_t *samples)
 
 		update_env(c);
 
+		const unsigned sh = box_shift(c);
 		uint32_t pos      = 0;
 		uint32_t prev_pos = 0;
-		int32_t sample    = 0;
+		int32_t acc       = 0;
+		int32_t sample;
+		bool moved = false;
 
 		while (update_freq(c, &pos)) {
+			moved = true;
+			acc += (int32_t)((pos - prev_pos) >> sh) * c->val;
 			c->noise.lfsr_reg = (c->noise.lfsr_reg << 1) |
 				(c->val >= VOL_INIT_MAX/MAX_CHAN_VOLUME);
 
@@ -345,14 +394,17 @@ static void update_noise(int16_t *samples)
 					VOL_INIT_MIN / MAX_CHAN_VOLUME;
 			}
 
-			sample += ((pos - prev_pos) / c->freq_inc) * c->val;
 			prev_pos = pos;
 		}
+		if (moved) {
+			acc += (int32_t)((c->freq_inc - prev_pos) >> sh) * c->val;
+			sample = acc / (int32_t)(c->freq_inc >> sh);
+		} else
+			sample = c->val; /* as for the square */
 
 		if (c->muted)
 			continue;
 
-		sample += c->val;
 		sample *= c->volume;
 		sample /= 4;
 
@@ -361,21 +413,140 @@ static void update_noise(int16_t *samples)
 	}
 }
 
-/**
- * SDL2 style audio callback function.
- */
+/* Render any part of an audio buffer with the APU register values which
+ * were effective at that point in *emulated CPU time*.  In particular,
+ * streaming voice via FF30..FF3F must not see only the final wave table. */
+static void audio_render_samples(int16_t *stream, const uint_fast16_t count)
+{
+	update_square(stream, 0, count);
+	update_square(stream, 1, count);
+	update_wave(stream, count);
+	update_noise(stream, count);
+}
+
+/** SDL2-style full-buffer callback, retained for HWAY and other callers. */
 void audio_callback(void *userdata, int16_t *stream, size_t len)
 {
-	/* Appease unused variable warning. */
 	(void)userdata;
-
 	memset(stream, 0, len);
-
-	update_square(stream, 0);
-	update_square(stream, 1);
-	update_wave(stream);
-	update_noise(stream);
+	audio_render_samples(stream, AUDIO_NSAMPLES);
 }
+
+/* Unlike a frame-end APU callback, this tracks register writes inside the
+ * emulated frame.  No allocation, events array, or additional output buffer.
+ * At most AUDIO_SAMPLES stereo frames are rendered per GB frame in total. */
+static int16_t *audio_frame_stream;
+static uint_fast16_t audio_frame_pos;
+
+static void audio_frame_sync(const uint32_t cycles)
+{
+	if (!audio_frame_stream) return;
+	const uint_fast16_t target = cycles >= 70224u ? AUDIO_SAMPLES :
+		(uint_fast16_t)((cycles * (uint32_t)AUDIO_SAMPLES) / 70224u);
+	if (target <= audio_frame_pos) return;
+	const uint_fast16_t frames = target - audio_frame_pos;
+	audio_render_samples(audio_frame_stream + audio_frame_pos * 2u, frames * 2u);
+	audio_frame_pos = target;
+}
+
+void audio_frame_begin(int16_t *stream)
+{
+	memset(stream, 0, AUDIO_BUFFER_SIZE_BYTES);
+	audio_frame_pos = 0;
+	audio_frame_stream = stream;
+}
+
+void audio_frame_end(void)
+{
+	audio_frame_sync(70224u);
+	audio_frame_stream = NULL;
+}
+
+#ifdef HWAY
+#include "hway/ay_hway.h"
+
+/* Game Boy -> AY-3-8910 pair, by the channel state once a frame (the
+ * envelopes step at 64 Hz, the sweep at 128 Hz, so it is heard almost as is):
+ *   CH1, CH2 (squares)  -> AY 0, tones A and B (the duty cycle is lost: 50%)
+ *   CH3 (wave)          -> AY 0, tone C (a square of the wave's pitch)
+ *   CH4 (noise)         -> AY 1, noise on channel A (the 7-bit mode is lost)
+ * The AY period of a Game Boy one: f = 131072 / (2048 - x) for a square,
+ * 65536 / (2048 - x) for the wave; AY: f = clock / (16 N). */
+static uint8_t hway_shadow[2][16];
+static bool hway_shadow_valid;
+
+static void hway_set(const unsigned chip, const uint8_t reg, const uint8_t value)
+{
+	if (hway_shadow_valid && hway_shadow[chip][reg] == value)
+		return;
+	hway_shadow[chip][reg] = value;
+	hway_write_register(chip, reg, value);
+}
+
+/* the Game Boy volume is linear, the AY one ~3 dB a step */
+static const uint8_t hway_level[16] = {
+	0, 7, 9, 10, 11, 12, 12, 13, 13, 14, 14, 14, 14, 15, 15, 15
+};
+
+static uint8_t hway_volume(const struct chan *c, unsigned linear)
+{
+	if (!c->powered || !c->enabled || c->muted || !(c->on_left || c->on_right))
+		return 0;
+	/* NR50: the louder side, 0..7 -> 1/8..8/8 */
+	linear = linear * ((unsigned)MAX(vol_l, vol_r) + 1) / 8;
+	return hway_level[linear > 15 ? 15 : linear];
+}
+
+static void hway_tone(const unsigned chip, const unsigned ay_chan, uint32_t gb_period, const unsigned mult)
+{
+	/* N = clock * mult * (2048 - x) / 2097152, rounded */
+	uint32_t n = (uint32_t)(((uint64_t)HWAY_AY_CLOCK * mult * gb_period + 1048576u) / 2097152u);
+	if (n < 1) n = 1;
+	if (n > 4095) n = 4095;
+	hway_set(chip, (uint8_t)(ay_chan * 2), (uint8_t)n);
+	hway_set(chip, (uint8_t)(ay_chan * 2 + 1), (uint8_t)(n >> 8));
+}
+
+void audio_hway_update(void)
+{
+	static const uint8_t lfsr_div_lut[] = { 8, 16, 32, 48, 64, 80, 96, 112 };
+
+	hway_heartbeat();
+	if (hway_take_silenced())
+		hway_shadow_valid = false; /* core 1 zeroed the volumes: all again */
+
+	/* AY 0: three tones, no noise; AY 1: the noise on channel A only */
+	hway_set(0, 7, 0x38);
+	hway_set(1, 7, 0xb7);
+
+	for (unsigned i = 0; i < 2; i++) {
+		const struct chan *c = chans + i;
+		hway_tone(0, i, 2048u - (c->freq & 0x7ff), 1);
+		hway_set(0, (uint8_t)(8 + i), hway_volume(c, c->volume));
+	}
+
+	{
+		const struct chan *c = chans + 2;
+		static const uint8_t wave_linear[4] = { 0, 15, 8, 4 }; /* NR32: 0, 100, 50, 25% */
+		hway_tone(0, 2, 2048u - (c->freq & 0x7ff), 2);
+		hway_set(0, 10, hway_volume(c, wave_linear[c->volume & 3]));
+	}
+
+	{
+		const struct chan *c = chans + 3;
+		/* the LFSR clocks 4194304 / (div << s) times a second, the AY noise
+		 * clock / (16 NP) */
+		const uint32_t div = (uint32_t)lfsr_div_lut[c->noise.lfsr_div & 7] << (c->freq & 15);
+		uint32_t np = (uint32_t)(((uint64_t)HWAY_AY_CLOCK * div + 33554432u) / 67108864u);
+		if (np < 1) np = 1;
+		if (np > 31) np = 31;
+		hway_set(1, 6, (uint8_t)np);
+		hway_set(1, 8, hway_volume(c, c->volume));
+	}
+
+	hway_shadow_valid = true;
+}
+#endif
 
 static void chan_trigger(uint_fast8_t i)
 {
@@ -455,6 +626,9 @@ uint8_t audio_read(const uint16_t addr)
  */
 void audio_write(const uint16_t addr, const uint8_t val)
 {
+	/* Finish samples up to this CPU write using the PREVIOUS register
+	 * values.  That preserves the succession of CH3 wave-RAM tables for PCM. */
+	audio_frame_sync(gb_audio_cycles);
 	/* Find sound channel corresponding to register address. */
 	uint_fast8_t i;
 

@@ -27,6 +27,11 @@ extern "C" {
  */
 void audio_callback(void *ptr, int16_t *data, size_t len);
 
+/* Synthesis synced to emulated CPU register writes (PCM / wave RAM). */
+extern uint32_t gb_audio_cycles;
+void audio_frame_begin(int16_t *data);
+void audio_frame_end(void);
+
 /**
  * Read audio register at given address "addr".
  */
@@ -41,6 +46,14 @@ void audio_write(const uint16_t addr, const uint8_t val);
  * Initialise audio driver.
  */
 void audio_init(void);
+
+#ifdef HWAY
+/**
+ * Hardware AY-3-8910: the channel state to the chips (once a frame, after
+ * audio_callback()).
+ */
+void audio_hway_update(void);
+#endif
 
 #ifdef __cplusplus
 }

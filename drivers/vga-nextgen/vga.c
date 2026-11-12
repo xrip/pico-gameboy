@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include "fast_mem.h"
 #include "hardware/clocks.h"
 #include "stdbool.h"
 #include "hardware/structs/pll.h"
@@ -49,6 +50,8 @@ static uint graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
 static volatile enum graphics_scale_t graphics_scale = GRAPHICS_SCALE_3X;
+static volatile uint8_t gray_lines = 0; // GRAPHICS_GRAY_* (2x and 3x)
+static volatile uint8_t gray_level = 1; // 0..3: one RGB222 step per channel
 
 // source row shown on a screen line, -1 outside the picture; a table (no
 // division in the IRQ: RP2040 divides in the flash)
@@ -94,6 +97,14 @@ static uint text_buffer_width = 0;
 static uint text_buffer_height = 0;
 
 static uint16_t txt_palette[16];
+
+#define OVERLAY_BAR_Y 228
+#define OVERLAY_TEXT_Y 230
+#define OVERLAY_TEXT_MAX 52
+static char overlay_text[2][OVERLAY_TEXT_MAX + 1];
+static uint8_t overlay_text_len[2];
+static volatile uint8_t overlay_text_index = 0;
+static volatile bool overlay_enabled = false;
 
 //буфер 2К текстовой палитры для быстрой работы
 static uint16_t* txt_palette_fast = NULL;
@@ -146,16 +157,57 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+    /* The Game Boy picture and the overlay skip the lines that repeat the
+     * previous buffer, so a drawn line is shown on 2 (2x, overlay), 3 (3x)
+     * or 3..4 (Full) screen lines. Picking the buffer by the parity of the
+     * screen line then draws into the buffer still on the screen whenever a
+     * run is even (always in 2x, on the 4-line rows in Full): its bg fill
+     * runs ahead of the DMA and the rest of that line comes out black.
+     * Alternate the two buffers per drawn line instead. */
+    static uint32_t drawn_buffer = 0;
+#define NEXT_DRAWN_BUFFER() (output_buffer = &lines_pattern[2 + (drawn_buffer ^= 1)])
+
+    const int overlay_y = screen_line >> 1;
+    if (overlay_enabled && graphics_mode == GRAPHICSMODE_DEFAULT && overlay_y >= OVERLAY_BAR_Y) {
+        if (screen_line & 1) return;
+        NEXT_DRAWN_BUFFER();
+        uint16_t* const dst = (uint16_t*)((uint8_t*)*output_buffer + shift_picture);
+        /* 255 is the screen border colour on HDMI / TV; on VGA the border is
+         * bg_color and palette[255] is just a palette entry (light): use
+         * the border colour, as the other drivers do */
+        const uint16_t bg = (uint16_t)bg_color[0], fg = palette[0][GRAPHICS_OSD_FG];
+        for (int x = 0; x < visible_line_size; ++x) dst[x] = bg;
+        if (overlay_y >= OVERLAY_TEXT_Y && overlay_y < OVERLAY_TEXT_Y + 8) {
+            const uint8_t index = overlay_text_index;
+            const char* const str = overlay_text[index];
+            const int len = overlay_text_len[index];
+            const int x0 = (visible_line_size - len * 6) / 2;
+            for (int c = 0; c < len; ++c) {
+                uint8_t bits = font_6x8[(uint8_t)str[c] * 8 + (overlay_y - OVERLAY_TEXT_Y)];
+                for (int x = 0; x < 6; ++x, bits >>= 1)
+                    if (bits & 1) dst[x0 + c * 6 + x] = fg;
+            }
+        }
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
 
     if (graphics_mode == GRAPHICSMODE_DEFAULT) {
         /* Game Boy picture on 640x480: 2x, 3x or stretched to the whole screen.
          * A screen line that shows the same source row as the previous one
          * keeps the previous line buffer (no new DMA address). */
         const int row = scaled_row(screen_line);
+        /* gray lines: the last screen line of a source row (horizontal) and
+         * the last pixel of a source pixel (vertical) are drawn in grey */
+        const uint8_t gray = graphics_scale == GRAPHICS_SCALE_STRETCH ? 0 : gray_lines;
+        const bool gray_row = (gray & GRAPHICS_GRAY_HORIZONTAL) && row >= 0 && scaled_row(screen_line + 1) != row;
+        const bool gray_col = (gray & GRAPHICS_GRAY_VERTICAL) != 0;
+        const uint8_t gray_wire = (uint8_t)(palette16_mask | (gray_level & 3u) * 0x15u);
         const uint8_t* const cells = backplane_cells;
         if (cells) {
             /* with the backplane a new cell row begins on every second line */
-            if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1)) return;
+            if (screen_line > 0 && (screen_line & 1) && row == scaled_row(screen_line - 1) && !gray_row) return;
+            NEXT_DRAWN_BUFFER();
             const uint8_t* bp = cells + (screen_line >> 1) * BACKPLANE_W;
             const uint32_t p_i = (((row < 0 ? screen_line : row) & is_flash_line) + (frame_number & is_flash_frame)) & 1;
             const uint16_t* current_palette = palette[p_i];
@@ -170,9 +222,22 @@ void __time_critical_func() dma_handler_VGA() {
             }
             if (row >= 0) {
                 const uint8_t* src = input_buffer + row * w;
-                for (int x = 0; x < w; x++) {
-                    const uint8_t c = (uint8_t)current_palette[src[x]];
-                    for (int i = k; i--;) *out++ = c;
+                if (gray_row) {
+                    fast_memset((uint8_t *)out, gray_wire, k * w);
+                    out += k * w;
+                }
+                else if (gray_col) {
+                    for (int x = 0; x < w; x++) {
+                        const uint8_t c = (uint8_t)current_palette[src[x]];
+                        for (int i = k - 1; i--;) *out++ = c;
+                        *out++ = gray_wire;
+                    }
+                }
+                else {
+                    for (int x = 0; x < w; x++) {
+                        const uint8_t c = (uint8_t)current_palette[src[x]];
+                        for (int i = k; i--;) *out++ = c;
+                    }
                 }
                 for (int u = BACKPLANE_W - left; u < BACKPLANE_W; u++) {
                     const uint8_t c = (uint8_t)current_palette[bp[u]];
@@ -187,7 +252,8 @@ void __time_critical_func() dma_handler_VGA() {
             dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false);
             return;
         }
-        if (screen_line > 0 && row == scaled_row(screen_line - 1)) return;
+        if (screen_line > 0 && row == scaled_row(screen_line - 1) && !gray_row) return;
+        NEXT_DRAWN_BUFFER();
 
         const int w = graphics_buffer_width;
         const int line_bytes = visible_line_size * 2; // 640 pixels, one byte each
@@ -203,9 +269,22 @@ void __time_critical_func() dma_handler_VGA() {
         uint16_t* current_palette = palette[p_i];
         const uint8_t* src = input_buffer + row * w;
         volatile uint8_t* out = dst + left; // volatile: no memset calls (in the flash)
-        for (int x = 0; x < w; x++) {
-            const uint8_t c = (uint8_t)current_palette[src[x]];
-            for (int i = k; i--;) *out++ = c;
+        if (gray_row) {
+            fast_memset((uint8_t *)out, gray_wire, k * w);
+            out += k * w;
+        }
+        else if (gray_col) {
+            for (int x = 0; x < w; x++) {
+                const uint8_t c = (uint8_t)current_palette[src[x]];
+                for (int i = k - 1; i--;) *out++ = c;
+                *out++ = gray_wire;
+            }
+        }
+        else {
+            for (int x = 0; x < w; x++) {
+                const uint8_t c = (uint8_t)current_palette[src[x]];
+                for (int i = k; i--;) *out++ = c;
+            }
         }
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
         return;
@@ -379,6 +458,20 @@ void __time_critical_func() dma_handler_VGA() {
     dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
 }
 
+void graphics_set_overlay(const char* text, bool enabled) {
+    if (enabled && text) {
+        const uint8_t next = overlay_text_index ^ 1u;
+        strncpy(overlay_text[next], text, OVERLAY_TEXT_MAX);
+        overlay_text[next][OVERLAY_TEXT_MAX] = '\0';
+        uint8_t len = 0;
+        while (len < OVERLAY_TEXT_MAX && overlay_text[next][len]) ++len;
+        overlay_text_len[next] = len;
+        __asm volatile ("dmb" ::: "memory");
+        overlay_text_index = next;
+    }
+    __asm volatile ("dmb" ::: "memory");
+    overlay_enabled = enabled;
+}
 void graphics_set_mode(enum graphics_mode_t mode) {
     switch (mode) {
         case TEXTMODE_53x30:
@@ -524,6 +617,11 @@ void graphics_set_buffer(uint8_t* buffer, const uint16_t width, const uint16_t h
 void graphics_set_offset(const int x, const int y) {
     graphics_buffer_shift_x = x;
     graphics_buffer_shift_y = y;
+}
+
+void graphics_set_gray_lines(const uint8_t lines, const uint8_t level) {
+    gray_level = level & 3u;
+    gray_lines = lines & (GRAPHICS_GRAY_VERTICAL | GRAPHICS_GRAY_HORIZONTAL);
 }
 
 void graphics_set_scale(enum graphics_scale_t scale) {
